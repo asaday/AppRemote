@@ -1,5 +1,7 @@
 using System.IO;
 using System.ComponentModel;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -26,6 +28,7 @@ public partial class MainWindow : Window
     private bool _trayTipShown;
     private readonly Forms.NotifyIcon _trayIcon;
     private readonly Forms.ToolStripMenuItem _trayStopItem;
+    private readonly Forms.ToolStripMenuItem _trayConsoleItem;
     private readonly System.Drawing.Icon? _trayImage;
 
     public MainWindow()
@@ -34,6 +37,8 @@ public partial class MainWindow : Window
         System.Windows.Application.Current.SessionEnding += (_, _) => _exitRequested = true;
         RestoreLastWindowCheck.IsChecked = _settings.RestoreLastWindow;
         VideoModePicker.SelectedIndex = (int)_settings.VideoMode;
+        TouchModePicker.SelectedIndex = (int)_settings.TouchMode;
+        BackgroundInputCheck.IsChecked = _settings.BackgroundInput;
         PortTextBox.Text = _settings.Port.ToString();
         if (typeof(MainWindow).Assembly.GetName().Version is { } version)
         {
@@ -43,13 +48,19 @@ public partial class MainWindow : Window
         }
         _server = new RemoteServer(_session, _settings.Port);
         _server.SetVideoPreference(_settings.VideoMode);
+        _server.SetTouchMode(_settings.TouchMode);
+        _server.SetBackgroundInput(_settings.BackgroundInput);
         _initializingSettings = false;
         _trayImage = System.Drawing.Icon.ExtractAssociatedIcon(Environment.ProcessPath!);
         _trayStopItem = new Forms.ToolStripMenuItem("Stop sharing", null, (_, _) => Dispatcher.BeginInvoke(StopSharing));
         _trayStopItem.Enabled = false;
+        _trayConsoleItem = new Forms.ToolStripMenuItem("Keep streaming after RDP", null,
+            (_, _) => Dispatcher.BeginInvoke(SwitchToConsole));
         var trayMenu = new Forms.ContextMenuStrip();
         trayMenu.Items.Add("Open App Remote", null, (_, _) => Dispatcher.BeginInvoke(RestoreFromTray));
         trayMenu.Items.Add(_trayStopItem);
+        trayMenu.Items.Add(_trayConsoleItem);
+        trayMenu.Opening += (_, _) => _trayConsoleItem.Enabled = IsRemoteDesktopSession();
         trayMenu.Items.Add(new Forms.ToolStripSeparator());
         trayMenu.Items.Add("Exit", null, (_, _) => Dispatcher.BeginInvoke(ExitFromTray));
         _trayIcon = new Forms.NotifyIcon
@@ -209,6 +220,20 @@ public partial class MainWindow : Window
         SaveSettings();
         UpdateStatus();
     }
+    private void TouchMode_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_initializingSettings || TouchModePicker.SelectedIndex < 0) return;
+        _settings.TouchMode = (TouchInputMode)TouchModePicker.SelectedIndex;
+        _server.SetTouchMode(_settings.TouchMode);
+        SaveSettings();
+    }
+    private void BackgroundInput_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_initializingSettings) return;
+        _settings.BackgroundInput = BackgroundInputCheck.IsChecked == true;
+        _server.SetBackgroundInput(_settings.BackgroundInput);
+        SaveSettings();
+    }
     private void PortTextBox_KeyDown(object sender, System.Windows.Input.KeyEventArgs e)
     {
         if (e.Key == Key.Enter) { e.Handled = true; ApplyPort_Click(sender, e); }
@@ -224,6 +249,8 @@ public partial class MainWindow : Window
         ApplyPortButton.IsEnabled = false;
         var next = new RemoteServer(_session, port);
         next.SetVideoPreference(_settings.VideoMode);
+        next.SetTouchMode(_settings.TouchMode);
+        next.SetBackgroundInput(_settings.BackgroundInput);
         try
         {
             await next.StartAsync();
@@ -348,6 +375,33 @@ public partial class MainWindow : Window
         _exitRequested = true;
         Close();
     }
+
+    private static bool IsRemoteDesktopSession()
+        => (uint)Process.GetCurrentProcess().SessionId != WTSGetActiveConsoleSessionId();
+
+    private void SwitchToConsole()
+    {
+        if (!IsRemoteDesktopSession()) return;
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = Path.Combine(Environment.SystemDirectory, "tscon.exe"),
+                Arguments = $"{Process.GetCurrentProcess().SessionId} /dest:console",
+                UseShellExecute = true,
+                Verb = "runas"
+            });
+        }
+        catch (Win32Exception ex)
+        {
+            if (ex.NativeErrorCode == 1223) return; // The user canceled UAC.
+            RestoreFromTray();
+            StatusText.Text = "Could not switch to console: " + ex.Message;
+        }
+    }
+
+    [DllImport("kernel32.dll")]
+    private static extern uint WTSGetActiveConsoleSessionId();
 
     private async void Window_Closed(object? sender, EventArgs e)
     {

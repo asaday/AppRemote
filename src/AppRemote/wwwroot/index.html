@@ -20,6 +20,7 @@
     #notice { position: fixed; left: 1rem; right: 1rem; bottom: 1rem; padding: .7rem 1rem; border-radius: .5rem; background: #233248; color: white; text-align: center; font: 14px -apple-system, BlinkMacSystemFont, sans-serif; }
     #notice.hidden { display: none; }
     #keyboard { position: fixed; top: 0; left: 0; width: 1px; height: 1px; opacity: 0; border: 0; padding: 0; font-size: 16px; }
+    #remoteCursor { display: none; position: fixed; z-index: 2; width: 18px; height: 18px; border: 2px solid white; border-radius: 50%; box-shadow: 0 0 0 1px black; transform: translate(-50%, -50%); pointer-events: none; }
   </style>
 </head>
 <body>
@@ -27,7 +28,8 @@
   <video id="video" autoplay muted playsinline></video>
   <div id="message">Connecting...</div>
   <div id="notice" class="hidden" role="status"></div>
+  <div id="remoteCursor" aria-hidden="true"></div>
   <input id="keyboard" type="text" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="Remote text input">
-  <script src="/app.js"></script>
+  <script src="/app.js?v=1.1.1"></script>
 </body>
 </html>

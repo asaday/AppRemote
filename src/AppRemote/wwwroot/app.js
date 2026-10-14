@@ -4,6 +4,7 @@
   const message = document.getElementById('message');
   const notice = document.getElementById('notice');
   const keyboard = document.getElementById('keyboard');
+  const remoteCursor = document.getElementById('remoteCursor');
   const key = new URLSearchParams(location.search).get('key');
   if (!key) { message.textContent = 'Open the QR code shown on your PC'; return; }
 
@@ -29,6 +30,10 @@
   let modeVersion = -1;
   let noticeTimer;
   let startupTimer;
+  let touchMode = 'direct';
+  let backgroundInput = false;
+  let virtualCursorX = 0.5;
+  let virtualCursorY = 0.5;
 
   function show(text) { message.textContent = text; message.classList.remove('hidden'); }
   function hide() { message.classList.add('hidden'); }
@@ -41,7 +46,7 @@
   function send(payload) {
     if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(payload));
   }
-  function point(touch) {
+  function displaySize() {
     const sourceWidth = videoReady ? video.videoWidth : image.naturalWidth;
     const sourceHeight = videoReady ? video.videoHeight : image.naturalHeight;
     if (!sourceWidth || !sourceHeight) return null;
@@ -49,12 +54,40 @@
     const scale = Math.min(view.width / sourceWidth, view.height / sourceHeight);
     const width = sourceWidth * scale;
     const height = sourceHeight * scale;
+    return { view, width, height };
+  }
+  function point(touch) {
+    const size = displaySize();
+    if (!size) return null;
+    const { view, width, height } = size;
     const left = view.left + (view.width - width) / 2;
     const top = view.top + (view.height - height) / 2;
     const x = (touch.clientX - left) / width;
     const y = (touch.clientY - top) / height;
     if (x < 0 || x > 1 || y < 0 || y > 1) return null;
     return { x, y };
+  }
+  function updateRemoteCursor() {
+    const size = displaySize();
+    if (!backgroundInput || touchMode !== 'cursor' || !currentClientId || waitingForWindow || !size) {
+      remoteCursor.style.display = 'none';
+      return;
+    }
+    remoteCursor.style.left = (size.view.left + (size.view.width - size.width) / 2 + virtualCursorX * size.width) + 'px';
+    remoteCursor.style.top = (size.view.top + (size.view.height - size.height) / 2 + virtualCursorY * size.height) + 'px';
+    remoteCursor.style.display = 'block';
+  }
+  function moveCursor(dx, dy) {
+    const size = displaySize();
+    if (!size || (!dx && !dy)) return;
+    const relativeX = Math.max(-1, Math.min(1, dx / size.width));
+    const relativeY = Math.max(-1, Math.min(1, dy / size.height));
+    send({ type: 'cursorMove', dx: relativeX, dy: relativeY });
+    if (backgroundInput && touchMode === 'cursor') {
+      virtualCursorX = Math.max(0, Math.min(1, virtualCursorX + relativeX));
+      virtualCursorY = Math.max(0, Math.min(1, virtualCursorY + relativeY));
+      updateRemoteCursor();
+    }
   }
 
   async function startVideo(clientId, version, h264Only = false) {
@@ -151,6 +184,7 @@
     videoReady = true;
     video.style.display = 'block';
     waitingForWindow = false;
+    updateRemoteCursor();
     hide();
   });
   if (video.requestVideoFrameCallback) {
@@ -168,6 +202,19 @@
     held = false;
     single = null;
   }
+  function applyTouchMode(mode) {
+    if (mode !== 'Direct' && mode !== 'Cursor') return;
+    release();
+    multiple = null;
+    touchMode = mode === 'Cursor' ? 'cursor' : 'direct';
+    virtualCursorX = virtualCursorY = 0.5;
+    updateRemoteCursor();
+  }
+  function applyBackgroundInput(enabled) {
+    backgroundInput = enabled === true;
+    virtualCursorX = virtualCursorY = 0.5;
+    updateRemoteCursor();
+  }
 
   function connect() {
     replaced = false;
@@ -184,15 +231,22 @@
           const status = JSON.parse(event.data);
           if (status.type === 'ready') {
             currentClientId = status.clientId;
+            applyTouchMode(status.touchMode);
+            applyBackgroundInput(status.backgroundInput);
             applyVideoMode(status);
           } else if (status.type === 'videoMode') {
             applyVideoMode(status);
+          } else if (status.type === 'touchMode') {
+            applyTouchMode(status.mode);
+          } else if (status.type === 'backgroundInput') {
+            applyBackgroundInput(status.enabled);
           } else if (status.type === 'replaced') {
             replaced = true;
             show('Another device is connected');
             socket.close();
           } else if (status.type === 'waiting') {
             waitingForWindow = true;
+            updateRemoteCursor();
             show('Choose a window on your PC');
           }
         } catch { }
@@ -201,7 +255,7 @@
       if (videoReady) return;
       const next = URL.createObjectURL(event.data);
       const previous = objectUrl;
-      image.onload = () => { waitingForWindow = false; hide(); if (previous) URL.revokeObjectURL(previous); };
+      image.onload = () => { waitingForWindow = false; updateRemoteCursor(); hide(); if (previous) URL.revokeObjectURL(previous); };
       image.onerror = () => URL.revokeObjectURL(next);
       objectUrl = next;
       image.src = next;
@@ -215,6 +269,7 @@
       videoReady = false;
       waitingForWindow = false;
       video.style.display = 'none';
+      updateRemoteCursor();
       if (replaced || event.code === 4001) {
         show('Another device is connected');
         return;
@@ -230,8 +285,11 @@
     event.preventDefault();
     keyboard.blur();
     if (event.touches.length === 1) {
-      const start = point(event.touches[0]);
-      single = start && { start, last: start, startTime: performance.now(), startX: event.touches[0].clientX, startY: event.touches[0].clientY };
+      const touch = event.touches[0];
+      const start = touchMode === 'cursor' ? displaySize() : point(touch);
+      single = start && { cursor: touchMode === 'cursor', start, last: start, startTime: performance.now(),
+        startX: touch.clientX, startY: touch.clientY, sentX: touch.clientX, sentY: touch.clientY, moved: false };
+      lastMove = 0;
       multiple = null;
     } else if (event.touches.length === 2) {
       release();
@@ -253,6 +311,16 @@
     }
     if (event.touches.length !== 1 || !single) return;
     const touch = event.touches[0];
+    if (single.cursor) {
+      if (Math.hypot(touch.clientX - single.startX, touch.clientY - single.startY) > 7) single.moved = true;
+      if (performance.now() - lastMove > 25) {
+        moveCursor(touch.clientX - single.sentX, touch.clientY - single.sentY);
+        single.sentX = touch.clientX;
+        single.sentY = touch.clientY;
+        lastMove = performance.now();
+      }
+      return;
+    }
     const current = point(touch);
     if (!current) return;
     const distance = Math.hypot(touch.clientX - single.startX, touch.clientY - single.startY);
@@ -275,6 +343,13 @@
     }
     if (!single || event.touches.length) return;
     const ended = event.changedTouches[0];
+    if (single.cursor) {
+      moveCursor(ended.clientX - single.sentX, ended.clientY - single.sentY);
+      if (!single.moved)
+        send({ type: performance.now() - single.startTime >= 550 ? 'cursorRight' : 'cursorClick' });
+      single = null;
+      return;
+    }
     const last = point(ended) || single.last;
     if (held) send({ type: 'up', ...last });
     else if (performance.now() - single.startTime >= 550) send({ type: 'right', ...last });
@@ -299,10 +374,10 @@
     }
   });
   document.addEventListener('pointermove', event => {
-    if (event.pointerType !== 'mouse' || !mouseHeld) return;
+    if (event.pointerType !== 'mouse') return;
     const current = point(event);
     if (current) {
-      mouseLast = current;
+      if (mouseHeld) mouseLast = current;
       if (performance.now() - lastMove > 25) {
         send({ type: 'move', ...current });
         lastMove = performance.now();
@@ -361,5 +436,7 @@
     mouseLast = null;
   });
   document.addEventListener('visibilitychange', () => { if (document.hidden) release(); });
+  window.addEventListener('resize', updateRemoteCursor);
+  video.addEventListener('resize', updateRemoteCursor);
   connect();
 })();

@@ -1,7 +1,7 @@
 <Window x:Class="AppRemote.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="App Remote" Icon="Assets/app.ico" Height="740" Width="900" MinHeight="600" MinWidth="630"
+        Title="App Remote" Icon="Assets/app.ico" Height="830" Width="900" MinHeight="680" MinWidth="630"
         Background="#10151D" Foreground="#F2F5F8" FontFamily="Segoe UI"
         Loaded="Window_Loaded" Closing="Window_Closing" Closed="Window_Closed"
         StateChanged="Window_StateChanged">
@@ -56,6 +56,23 @@
                 </StackPanel>
                 <TextBlock Text="Auto prefers H.265, then H.264 or JPEG. Manual modes use JPEG if unavailable."
                            Foreground="#A9B8C7" FontSize="11" Margin="0,4,0,0" TextWrapping="Wrap" />
+                <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                    <TextBlock Text="Phone input" VerticalAlignment="Center" Margin="0,0,10,0" />
+                    <ComboBox x:Name="TouchModePicker" Width="150" SelectionChanged="TouchMode_SelectionChanged"
+                              ToolTip="Direct taps the image. Cursor moves the pointer with your finger and taps at its position.">
+                        <ComboBoxItem Content="Direct touch" />
+                        <ComboBoxItem Content="Cursor (trackpad)" />
+                    </ComboBox>
+                </StackPanel>
+                <CheckBox x:Name="BackgroundInputCheck" Margin="0,10,0,0"
+                          Checked="BackgroundInput_Changed" Unchecked="BackgroundInput_Changed"
+                          VerticalContentAlignment="Top">
+                    <StackPanel>
+                        <TextBlock Text="Send input without activating window" Foreground="#F2F5F8" />
+                        <TextBlock Text="Experimental. Some apps ignore background input."
+                                   Foreground="#A9B8C7" FontSize="11" Margin="0,4,0,0" TextWrapping="Wrap" />
+                    </StackPanel>
+                </CheckBox>
                 <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
                     <TextBlock Text="Port" VerticalAlignment="Center" Margin="0,0,12,0" />
                     <TextBox x:Name="PortTextBox" Width="72" MaxLength="5" VerticalContentAlignment="Center"

@@ -44,6 +44,8 @@ internal static class NativeWindows
         return GetWindowRect(hwnd, out rect);
     }
 
+    public static bool TryGetInputBounds(nint hwnd, out RECT rect) => GetWindowRect(hwnd, out rect);
+
     public static bool Activate(nint hwnd)
     {
         if (GetForegroundWindow() == hwnd) return true;
@@ -54,6 +56,40 @@ internal static class NativeWindows
     public static bool IsForeground(nint hwnd) => GetForegroundWindow() == hwnd;
 
     public static bool MoveCursor(int x, int y) => SetCursorPos(x, y);
+
+    public static bool IsValidWindow(nint hwnd) => IsWindow(hwnd);
+
+    public static bool TryGetCursorPosition(out POINT point) => GetCursorPos(out point);
+
+    public static bool TryGetClientTarget(nint root, int screenX, int screenY, out nint window, out POINT point)
+    {
+        window = root;
+        point = new POINT { X = screenX, Y = screenY };
+        if (!ScreenToClient(window, ref point) || !GetClientRect(window, out var client) ||
+            point.X < 0 || point.Y < 0 || point.X >= client.Right || point.Y >= client.Bottom) return false;
+        const uint skipInvisibleDisabledTransparent = 0x0001 | 0x0002 | 0x0004;
+        for (var depth = 0; depth < 16; depth++)
+        {
+            var child = ChildWindowFromPointEx(window, point, skipInvisibleDisabledTransparent);
+            if (child == 0 || child == window) break;
+            window = child;
+            point = new POINT { X = screenX, Y = screenY };
+            if (!ScreenToClient(window, ref point)) return false;
+        }
+        return true;
+    }
+
+    public static bool TryScreenToClient(nint window, int screenX, int screenY, out POINT point)
+    {
+        point = new POINT { X = screenX, Y = screenY };
+        return ScreenToClient(window, ref point);
+    }
+
+    public static bool PostWindowMessage(nint window, uint message, nuint wParam = 0, nint lParam = 0)
+        => PostMessageW(window, message, wParam, lParam);
+
+    public static nint PackPoint(int x, int y)
+        => unchecked((nint)(uint)((ushort)x | ((uint)(ushort)y << 16)));
 
     public static void SendMouse(uint flags, uint data = 0)
     {
@@ -77,6 +113,8 @@ internal static class NativeWindows
 
     [StructLayout(LayoutKind.Sequential)]
     internal struct RECT { public int Left, Top, Right, Bottom; }
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct POINT { public int X, Y; }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct INPUT { public uint Type; public INPUTUNION Data; }
@@ -114,5 +152,10 @@ internal static class NativeWindows
     [DllImport("user32.dll")] private static extern nint GetForegroundWindow();
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(nint hwnd);
     [DllImport("user32.dll")] private static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] private static extern bool GetCursorPos(out POINT point);
+    [DllImport("user32.dll")] private static extern bool ScreenToClient(nint hwnd, ref POINT point);
+    [DllImport("user32.dll")] private static extern bool GetClientRect(nint hwnd, out RECT rect);
+    [DllImport("user32.dll")] private static extern nint ChildWindowFromPointEx(nint hwndParent, POINT point, uint flags);
+    [DllImport("user32.dll", SetLastError = true)] private static extern bool PostMessageW(nint hwnd, uint message, nuint wParam, nint lParam);
     [DllImport("user32.dll")] private static extern uint SendInput(uint count, INPUT[] inputs, int size);
 }

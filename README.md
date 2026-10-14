@@ -16,6 +16,8 @@ Download the Windows x64 ZIP from the [latest release](https://github.com/asaday
 
 - Select any eligible Windows window to stream
 - Tap, drag, scroll, and type from a phone or PC browser
+- Choose direct touch or relative cursor control in the Windows app
+- Optionally send input to the selected window without bringing it to the foreground (experimental)
 - Connect with a QR code or the **Copy URL** button
 - Add a shortcut with an icon to the iPhone Home Screen
 - One active browser connection at a time; a newer connection takes over
@@ -57,7 +59,7 @@ Exit App Remote from its system tray menu before rebuilding it. To move the app 
 4. Open the QR code on a phone connected to the same network. You can also use **Copy URL** and open the address manually.
 5. Click **Stop** to end capture of the selected window. The connection page stays available so you can select another window.
 
-Minimizing or closing the Windows window hides it in the system tray while the server and selected window remain active. Double-click the tray icon to reopen the window. The tray menu has **Open App Remote**, **Stop sharing**, and **Exit**; select **Exit** to shut down the server.
+Minimizing or closing the Windows window hides it in the system tray while the server and selected window remain active. Double-click the tray icon to reopen the window. The tray menu has **Open App Remote**, **Stop sharing**, **Keep streaming after RDP**, and **Exit**; select **Exit** to shut down the server.
 
 Enable **Restore last window on startup** to resume capture automatically when the previously selected app has one identifiable, visible window at launch. **Stop** clears the remembered window. The setting is stored for the current Windows user.
 
@@ -75,32 +77,38 @@ Tailscale assigns each device a stable IP address. You can also find the PC's ad
 
 ## Phone controls
 
+Use the Windows app's **Phone input** menu to choose **Direct touch** or **Cursor (trackpad)**. The choice is saved on the PC and updates the connected phone. **Direct touch** taps the point shown on screen and supports dragging. **Cursor** moves the Windows pointer relative to your finger; a tap clicks at the pointer's current position. Use Direct touch to drag an item.
+
+Enable **Send input without activating window** in the Windows app to try background control. This sends mouse and keyboard messages to the selected window instead of moving the PC's physical cursor or activating the window. In Cursor mode, a small marker on the phone shows the virtual pointer. The choice is saved on the PC and updates the connected phone. Turn the checkbox off to return to normal input.
+
 | Gesture | Windows input |
 | --- | --- |
-| Tap | Left click |
-| Drag | Hold and move the left mouse button |
-| Long press | Right click |
+| Tap | Left click at the touched point (Direct) or pointer position (Cursor) |
+| Drag | Hold and move the left mouse button (Direct) or move the pointer (Cursor) |
+| Long press | Right click at the touched point (Direct) or pointer position (Cursor) |
 | Move two fingers vertically | Scroll |
 | Tap with two fingers | Open the keyboard |
 
 The video keeps the window's aspect ratio. Black margins are outside the control area.
 
-On a PC browser, use the mouse to click, drag, right click, and scroll. Type directly with the keyboard; text and the listed navigation keys are forwarded. When the browser and target app run on the same PC, input brings the target app forward, so the browser loses keyboard focus.
+On a PC browser, moving the mouse over the image moves the target cursor in normal input mode. You can also click, drag, right click, and scroll. Type directly with the keyboard; text and the listed navigation keys are forwarded. When the browser and target app run on the same PC, input brings the target app forward, so the browser loses keyboard focus.
 
 ## Connection and limitations
 
+- If you start App Remote in a Remote Desktop (RDP) session, a normal RDP disconnect can freeze window capture. Before disconnecting, use **Keep streaming after RDP** in the Windows tray menu and approve the administrator prompt. This hands the running desktop to the console and disconnects RDP; App Remote and the selected window keep running. Do not sign out. Reconnecting with RDP moves the desktop back to the remote session. The menu item requires permission to connect to the console session. The equivalent command from an elevated Command Prompt is `tscon <ID> /dest:console`, where `query session` shows the RDP session ID.
 - The eight-character key in the connection URL stays the same across restarts. URLs using the older, longer key remain valid. If the PC's LAN IP address changes, scan the LAN QR code again to get a new URL.
 - The secret used to derive the key is stored at `%LOCALAPPDATA%\AppRemote\pairing.key` for the current Windows user.
-- Capture continues when the selected window is behind another window. Phone input brings the selected window to the foreground first. If Windows denies that focus change, the input cannot be delivered.
+- Capture continues when the selected window is behind another window. Normal input brings the selected window to the foreground first. If Windows denies that focus change, normal input cannot be delivered.
+- Background control is experimental. It can work with ordinary Windows controls, but applications that require focus, read raw input, or run elevated may ignore the posted messages. It targets the window's client area; title-bar controls are not supported. Windows also blocks [posting messages](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-postmessagew) to a higher-integrity process.
 - Elevated windows, UAC prompts, and minimized windows are outside the supported control path. Some apps may have a small offset between the captured image and pointer coordinates.
 - The connection page and control channel use HTTP and WebSocket over the LAN or tailnet. Anyone with the connection URL and network access can control the selected window, so use App Remote on a trusted private network or tailnet. Chrome on Android may not offer full PWA installation for an HTTP page.
 
 ## Development check
 
-Run the integration check in an active Windows desktop session, with a window open in the foreground and TCP port `8765` free:
+Run the integration check in an active Windows desktop session with TCP port `18765` free. It opens an animated test window:
 
 ```powershell
 dotnet run --project tests/CaptureSmoke/CaptureSmoke.csproj
 ```
 
-It checks web and icon delivery, key authentication, JPEG/WebSocket frames, and H.264/WebRTC frames. Check phone rendering and interaction on a device separately.
+It checks web and icon delivery, key authentication, foreground and background input, JPEG/WebSocket frames, and H.264/H.265 WebRTC frames. Check phone rendering and interaction on a device separately.

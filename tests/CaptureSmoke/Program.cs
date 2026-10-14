@@ -1,25 +1,23 @@
 using System.Net.WebSockets;
-using System.Runtime.InteropServices;
 using AppRemote;
 using AppRemote.Windows;
 using SIPSorcery.Media;
 using SIPSorcery.Net;
 using SIPSorceryMedia.Abstractions;
 using SIPSorceryMedia.FFmpeg;
+using Forms = System.Windows.Forms;
 
-var hwnd = GetForegroundWindow();
-if (hwnd == 0)
-{
-    Console.WriteLine("SKIP: no foreground window");
-    return 0;
-}
-
-GetWindowThreadProcessId(hwnd, out var pid);
-var codecSettings = new AppSettings { VideoMode = VideoPreference.H265, Port = 18765 };
+using var fixture = new AnimatedWindow();
+var hwnd = await fixture.StartAsync();
+var pid = (uint)Environment.ProcessId;
+var codecSettings = new AppSettings { VideoMode = VideoPreference.H265, TouchMode = TouchInputMode.Cursor,
+    BackgroundInput = true, Port = 18765 };
 var settingsRoundTrip = System.Text.Json.JsonSerializer.Deserialize<AppSettings>(
     System.Text.Json.JsonSerializer.Serialize(codecSettings));
-if (settingsRoundTrip?.VideoMode != VideoPreference.H265 || settingsRoundTrip.Port != 18765)
-    throw new Exception("Video preference or port was not preserved by settings serialization");
+if (settingsRoundTrip?.VideoMode != VideoPreference.H265 || settingsRoundTrip.TouchMode != TouchInputMode.Cursor ||
+    settingsRoundTrip.BackgroundInput != true ||
+    settingsRoundTrip.Port != 18765)
+    throw new Exception("Video, phone input, or port was not preserved by settings serialization");
 var settings = new AppSettings();
 var remembered = new WindowEntry(hwnd, "Saved title", pid);
 if (!settings.Remember(remembered)) throw new Exception("Could not identify the window for restore");
@@ -35,8 +33,12 @@ if (settings.FindLastWindow(new[] { remembered }) is not null)
     throw new Exception("Stop must clear the restore target");
 Console.WriteLine("OK: remembered window match and ambiguity check");
 using var session = new RemoteSession();
+var rawFrames = 0;
+session.RawFrameReady += (_, _, _) => Interlocked.Increment(ref rawFrames);
 session.CaptureFaulted += error => Console.WriteLine("CAPTURE ERROR: " + error);
 await using var server = new RemoteServer(session, 18765);
+server.VideoFailed += message => Console.WriteLine("VIDEO ERROR: " + message);
+server.VideoModeChanged += mode => Console.WriteLine("VIDEO MODE: " + mode);
 try
 {
     session.Select(new WindowEntry(hwnd, "Smoke test", pid));
@@ -88,6 +90,111 @@ try
     var clientId = readyJson.RootElement.GetProperty("clientId").GetString();
     if (string.IsNullOrEmpty(clientId)) throw new Exception("Client ID missing");
     var modeVersion = readyJson.RootElement.GetProperty("version").GetInt32();
+    if (readyJson.RootElement.GetProperty("touchMode").GetString() != "Direct")
+        throw new Exception("Initial phone input mode was not sent");
+    if (readyJson.RootElement.GetProperty("backgroundInput").GetBoolean())
+        throw new Exception("Initial background input mode was not sent");
+    server.SetTouchMode(TouchInputMode.Cursor);
+    using (var touchTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+    {
+        while (true)
+        {
+            var update = await socket.ReceiveAsync(buffer, touchTimeout.Token);
+            if (update.MessageType != WebSocketMessageType.Text) continue;
+            using var modeJson = System.Text.Json.JsonDocument.Parse(buffer.AsMemory(0, update.Count));
+            if (modeJson.RootElement.GetProperty("type").GetString() != "touchMode") continue;
+            if (modeJson.RootElement.GetProperty("mode").GetString() != "Cursor")
+                throw new Exception("Phone input mode update was incorrect");
+            break;
+        }
+    }
+    server.SetTouchMode(TouchInputMode.Direct);
+    Console.WriteLine("OK: phone input mode changes reach the connected browser");
+    server.SetBackgroundInput(true);
+    using (var backgroundTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+    {
+        while (true)
+        {
+            var update = await socket.ReceiveAsync(buffer, backgroundTimeout.Token);
+            if (update.MessageType != WebSocketMessageType.Text) continue;
+            using var modeJson = System.Text.Json.JsonDocument.Parse(buffer.AsMemory(0, update.Count));
+            if (modeJson.RootElement.GetProperty("type").GetString() != "backgroundInput") continue;
+            if (!modeJson.RootElement.GetProperty("enabled").GetBoolean())
+                throw new Exception("Background input update was incorrect");
+            break;
+        }
+    }
+    if (!NativeWindows.TryGetCursorPosition(out var beforeBackgroundClick))
+        throw new Exception("Could not read the cursor position");
+    var foregroundBeforeClick = NativeWindows.IsForeground(hwnd);
+    var down = System.Text.Encoding.UTF8.GetBytes("{\"type\":\"down\",\"x\":0.5,\"y\":0.5}");
+    var up = System.Text.Encoding.UTF8.GetBytes("{\"type\":\"up\",\"x\":0.5,\"y\":0.5}");
+    await socket.SendAsync(down, WebSocketMessageType.Text, true, CancellationToken.None);
+    await socket.SendAsync(up, WebSocketMessageType.Text, true, CancellationToken.None);
+    for (var i = 0; i < 20 && fixture.ClickCount == 0; i++) await Task.Delay(50);
+    if (fixture.ClickCount == 0)
+    {
+        NativeWindows.TryGetInputBounds(hwnd, out var debugBounds);
+        var hit = NativeWindows.TryGetClientTarget(hwnd,
+            (debugBounds.Left + debugBounds.Right) / 2, (debugBounds.Top + debugBounds.Bottom) / 2,
+            out var hitWindow, out var hitPoint);
+        throw new Exception($"Background click did not reach the test button (hit={hit}, window={hitWindow}, button={fixture.ButtonHandle}, point={hitPoint.X},{hitPoint.Y})");
+    }
+    if (!NativeWindows.TryGetCursorPosition(out var afterBackgroundClick) ||
+        beforeBackgroundClick.X != afterBackgroundClick.X || beforeBackgroundClick.Y != afterBackgroundClick.Y ||
+        foregroundBeforeClick != NativeWindows.IsForeground(hwnd))
+        throw new Exception("Background click changed the physical cursor or foreground window");
+    var textDown = System.Text.Encoding.UTF8.GetBytes("{\"type\":\"down\",\"x\":0.5,\"y\":0.95}");
+    var textUp = System.Text.Encoding.UTF8.GetBytes("{\"type\":\"up\",\"x\":0.5,\"y\":0.95}");
+    var textInput = System.Text.Encoding.UTF8.GetBytes("{\"type\":\"text\",\"value\":\"abc\"}");
+    await socket.SendAsync(textDown, WebSocketMessageType.Text, true, CancellationToken.None);
+    await socket.SendAsync(textUp, WebSocketMessageType.Text, true, CancellationToken.None);
+    await socket.SendAsync(textInput, WebSocketMessageType.Text, true, CancellationToken.None);
+    for (var i = 0; i < 20 && fixture.ReceivedText != "abc"; i++) await Task.Delay(50);
+    if (fixture.ReceivedText != "abc") throw new Exception("Background text did not reach the test field");
+    server.SetTouchMode(TouchInputMode.Cursor);
+    var previousClicks = fixture.ClickCount;
+    var cursorMove = System.Text.Encoding.UTF8.GetBytes("{\"type\":\"cursorMove\",\"dx\":0.1,\"dy\":0.1}");
+    var cursorClick = System.Text.Encoding.UTF8.GetBytes("{\"type\":\"cursorClick\"}");
+    await socket.SendAsync(cursorMove, WebSocketMessageType.Text, true, CancellationToken.None);
+    await socket.SendAsync(cursorClick, WebSocketMessageType.Text, true, CancellationToken.None);
+    for (var i = 0; i < 20 && fixture.ClickCount == previousClicks; i++) await Task.Delay(50);
+    if (fixture.ClickCount == previousClicks) throw new Exception("Background virtual cursor did not click the test button");
+    if (!NativeWindows.TryGetCursorPosition(out var afterVirtualClick) ||
+        beforeBackgroundClick.X != afterVirtualClick.X || beforeBackgroundClick.Y != afterVirtualClick.Y)
+        throw new Exception("Background virtual cursor moved the physical cursor");
+    server.SetTouchMode(TouchInputMode.Direct);
+    server.SetBackgroundInput(false);
+    Console.WriteLine("OK: background click, text, and virtual cursor work without moving the physical cursor or foreground window");
+    if (NativeWindows.IsForeground(hwnd) &&
+        NativeWindows.TryGetCaptureBounds(hwnd, out var bounds) &&
+        NativeWindows.TryGetCursorPosition(out var originalCursor))
+    {
+        try
+        {
+            var centerX = (bounds.Left + bounds.Right) / 2;
+            var centerY = (bounds.Top + bounds.Bottom) / 2;
+            NativeWindows.MoveCursor(centerX, centerY);
+            var move = System.Text.Encoding.UTF8.GetBytes("{\"type\":\"cursorMove\",\"dx\":0.1,\"dy\":0.1}");
+            await socket.SendAsync(move, WebSocketMessageType.Text, true, CancellationToken.None);
+            var moved = false;
+            for (var i = 0; i < 20; i++)
+            {
+                await Task.Delay(50);
+                if (NativeWindows.TryGetCursorPosition(out var cursor) &&
+                    cursor.X > centerX && cursor.Y > centerY &&
+                    cursor.X < bounds.Right && cursor.Y < bounds.Bottom)
+                {
+                    moved = true;
+                    break;
+                }
+            }
+            if (!moved) throw new Exception("Relative cursor movement was not applied");
+            Console.WriteLine("OK: relative cursor movement stays inside the selected window");
+        }
+        finally { NativeWindows.MoveCursor(originalCursor.X, originalCursor.Y); }
+    }
+    else Console.WriteLine("SKIP: Windows did not bring the capture test window to the foreground for the pointer check");
     while (true)
     {
         var result = await socket.ReceiveAsync(buffer, timeout.Token);
@@ -118,7 +225,7 @@ try
     var accepted = receiver.setRemoteDescription(new RTCSessionDescriptionInit { sdp = answer, type = RTCSdpType.answer });
     if (accepted != SetDescriptionResultEnum.OK) throw new Exception("WebRTC answer rejected: " + accepted);
     for (var i = 0; i < 150 && Volatile.Read(ref receivedFrames) == 0; i++) await Task.Delay(50);
-    if (receivedFrames == 0) throw new Exception("WebRTC connected but no H.264 frames arrived");
+    if (receivedFrames == 0) throw new Exception($"WebRTC connected but no H.264 frames arrived (raw={rawFrames})");
     Console.WriteLine($"OK: H.264 WebRTC frames={receivedFrames}");
     var framesBeforeStop = Volatile.Read(ref receivedFrames);
     session.Stop();
@@ -299,7 +406,51 @@ catch (Exception ex)
     return 1;
 }
 
-[DllImport("user32.dll")]
-static extern nint GetForegroundWindow();
-[DllImport("user32.dll")]
-static extern uint GetWindowThreadProcessId(nint hwnd, out uint pid);
+internal sealed class AnimatedWindow : IDisposable
+{
+    private readonly TaskCompletionSource<nint> _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly Thread _thread;
+    private Forms.Form? _form;
+    public nint ButtonHandle { get; private set; }
+    private int _clicks;
+    public int ClickCount => Volatile.Read(ref _clicks);
+    private string _receivedText = "";
+    public string ReceivedText => Volatile.Read(ref _receivedText);
+
+    public AnimatedWindow()
+    {
+        _thread = new Thread(Run) { IsBackground = true };
+        _thread.SetApartmentState(ApartmentState.STA);
+        _thread.Start();
+    }
+
+    public Task<nint> StartAsync() => _ready.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+    private void Run()
+    {
+        try
+        {
+            using var form = new Forms.Form { Text = "App Remote capture test", Width = 640, Height = 480 };
+            _form = form;
+            var button = new Forms.Button { Dock = Forms.DockStyle.Fill };
+            button.Click += (_, _) => Interlocked.Increment(ref _clicks);
+            form.Controls.Add(button);
+            var textBox = new Forms.TextBox { Dock = Forms.DockStyle.Bottom, Height = 50 };
+            textBox.TextChanged += (_, _) => Volatile.Write(ref _receivedText, textBox.Text);
+            form.Controls.Add(textBox);
+            using var timer = new Forms.Timer { Interval = 100 };
+            var counter = 0;
+            timer.Tick += (_, _) => button.Text = $"Frame {++counter}";
+            form.Shown += (_, _) => { ButtonHandle = button.Handle; timer.Start(); _ready.TrySetResult(form.Handle); };
+            Forms.Application.Run(form);
+        }
+        catch (Exception ex) { _ready.TrySetException(ex); }
+    }
+
+    public void Dispose()
+    {
+        if (_form is { IsHandleCreated: true } form)
+            form.BeginInvoke(new Action(form.Close));
+        _thread.Join(TimeSpan.FromSeconds(5));
+    }
+}

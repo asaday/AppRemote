@@ -7,6 +7,7 @@ using AppRemote.Windows;
 namespace AppRemote;
 
 internal enum VideoPreference { Auto, H265, H264, Jpeg }
+internal enum TouchInputMode { Direct, Cursor }
 
 internal sealed class AppSettings
 {
@@ -14,6 +15,9 @@ internal sealed class AppSettings
     public int Port { get; set; } = 8765;
     [JsonConverter(typeof(JsonStringEnumConverter<VideoPreference>))]
     public VideoPreference VideoMode { get; set; } = VideoPreference.Auto;
+    [JsonConverter(typeof(JsonStringEnumConverter<TouchInputMode>))]
+    public TouchInputMode TouchMode { get; set; } = TouchInputMode.Direct;
+    public bool BackgroundInput { get; set; }
     public string? LastExecutablePath { get; set; }
     public string? LastWindowTitle { get; set; }
 
@@ -29,6 +33,7 @@ internal sealed class AppSettings
                 ? JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(SettingsPath)) ?? new AppSettings()
                 : new AppSettings();
             if (!Enum.IsDefined(settings.VideoMode)) settings.VideoMode = VideoPreference.Auto;
+            if (!Enum.IsDefined(settings.TouchMode)) settings.TouchMode = TouchInputMode.Direct;
             if (settings.Port is < 1 or > 65535) settings.Port = 8765;
             return settings;
         }

@@ -33,6 +33,8 @@ internal sealed class RemoteServer : IAsyncDisposable
     private volatile bool _videoActive;
     private VideoPreference? _activeCodec;
     private VideoPreference _videoPreference = VideoPreference.Auto;
+    private TouchInputMode _touchMode = TouchInputMode.Direct;
+    private bool _backgroundInput;
     private int _videoModeVersion;
 
     public event Action<bool>? ClientChanged;
@@ -68,6 +70,25 @@ internal sealed class RemoteServer : IAsyncDisposable
         }
         Interlocked.Exchange(ref _videoPeer, null)?.Dispose();
         SetVideoMode(null);
+    }
+
+    public void SetTouchMode(TouchInputMode mode)
+    {
+        if (!Enum.IsDefined(mode)) throw new ArgumentOutOfRangeException(nameof(mode));
+        lock (_clientGate)
+        {
+            _input.ResetBackgroundCursor();
+            _touchMode = mode;
+        }
+    }
+
+    public void SetBackgroundInput(bool enabled)
+    {
+        lock (_clientGate)
+        {
+            _input.SetBackgroundMode(enabled);
+            _backgroundInput = enabled;
+        }
     }
 
     public async Task StartAsync()
@@ -216,17 +237,19 @@ internal sealed class RemoteServer : IAsyncDisposable
             _activeClient = connection;
         }
         _input.Release();
+        _input.ResetBackgroundCursor();
         Interlocked.Exchange(ref _videoPeer, null)?.Dispose();
         SetVideoMode(null);
         ClientChanged?.Invoke(true);
         try
         {
-            var (preference, version) = GetVideoSettings();
+            var (preference, version, touchMode, backgroundInput) = GetClientSettings();
             var ready = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new
-                { type = "ready", clientId = connection.Id, mode = preference.ToString(), version }));
+                { type = "ready", clientId = connection.Id, mode = preference.ToString(), version,
+                    touchMode = touchMode.ToString(), backgroundInput }));
             await socket.SendAsync(ready, WebSocketMessageType.Text, true, context.RequestAborted);
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted);
-            var sender = SendFramesAsync(connection, version, linked.Token);
+            var sender = SendFramesAsync(connection, version, touchMode, backgroundInput, linked.Token);
             var buffer = new byte[4096];
             var closeRequested = false;
             try
@@ -283,9 +306,9 @@ internal sealed class RemoteServer : IAsyncDisposable
         lock (_clientGate) return _videoPreference;
     }
 
-    private (VideoPreference Preference, int Version) GetVideoSettings()
+    private (VideoPreference Preference, int Version, TouchInputMode TouchMode, bool BackgroundInput) GetClientSettings()
     {
-        lock (_clientGate) return (_videoPreference, _videoModeVersion);
+        lock (_clientGate) return (_videoPreference, _videoModeVersion, _touchMode, _backgroundInput);
     }
 
     private static bool OfferHasCodec(string offer, VideoPreference codec)
@@ -303,7 +326,8 @@ internal sealed class RemoteServer : IAsyncDisposable
         _ => "WebRTC video"
     };
 
-    private async Task SendFramesAsync(ClientConnection connection, int announcedVersion, CancellationToken stop)
+    private async Task SendFramesAsync(ClientConnection connection, int announcedVersion,
+        TouchInputMode announcedTouchMode, bool announcedBackgroundInput, CancellationToken stop)
     {
         var socket = connection.Socket;
         long lastSequence = -1;
@@ -317,13 +341,27 @@ internal sealed class RemoteServer : IAsyncDisposable
                 await socket.CloseOutputAsync((WebSocketCloseStatus)4001, "Replaced by another device", stop);
                 break;
             }
-            var (preference, version) = GetVideoSettings();
+            var (preference, version, touchMode, backgroundInput) = GetClientSettings();
             if (version != announcedVersion)
             {
                 var update = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new
                     { type = "videoMode", mode = preference.ToString(), version }));
                 await socket.SendAsync(update, WebSocketMessageType.Text, true, stop);
                 announcedVersion = version;
+            }
+            if (touchMode != announcedTouchMode)
+            {
+                var update = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new
+                    { type = "touchMode", mode = touchMode.ToString() }));
+                await socket.SendAsync(update, WebSocketMessageType.Text, true, stop);
+                announcedTouchMode = touchMode;
+            }
+            if (backgroundInput != announcedBackgroundInput)
+            {
+                var update = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new
+                    { type = "backgroundInput", enabled = backgroundInput }));
+                await socket.SendAsync(update, WebSocketMessageType.Text, true, stop);
+                announcedBackgroundInput = backgroundInput;
             }
             var frame = _session.LatestFrame;
             if (_session.Selected is null)
