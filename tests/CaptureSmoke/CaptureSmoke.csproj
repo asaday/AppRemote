@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="SIPSorcery" Version="10.0.17" />
+    <PackageReference Include="SIPSorceryMedia.FFmpeg" Version="10.0.17" />
+    <Compile Include="../../src/AppRemote/Capture/WindowCapture.cs" Link="WindowCapture.cs" />
+    <Compile Include="../../src/AppRemote/RemoteSession.cs" Link="RemoteSession.cs" />
+    <Compile Include="../../src/AppRemote/RemoteServer.cs" Link="RemoteServer.cs" />
+    <Compile Include="../../src/AppRemote/VideoPeer.cs" Link="VideoPeer.cs" />
+    <Compile Include="../../src/AppRemote/Windows/NativeWindows.cs" Link="NativeWindows.cs" />
+    <Compile Include="../../src/AppRemote/Windows/InputController.cs" Link="InputController.cs" />
+    <Content Include="../../src/AppRemote/wwwroot/**/*" Link="wwwroot/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>
