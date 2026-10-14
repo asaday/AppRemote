@@ -17,6 +17,8 @@
     #video { position: absolute; inset: 0; display: none; }
     #message { position: fixed; inset: 0; display: grid; place-items: center; padding: 2rem; color: white; background: #000; text-align: center; font: 16px -apple-system, BlinkMacSystemFont, sans-serif; }
     #message.hidden { display: none; }
+    #notice { position: fixed; left: 1rem; right: 1rem; bottom: 1rem; padding: .7rem 1rem; border-radius: .5rem; background: #233248; color: white; text-align: center; font: 14px -apple-system, BlinkMacSystemFont, sans-serif; }
+    #notice.hidden { display: none; }
     #keyboard { position: fixed; top: 0; left: 0; width: 1px; height: 1px; opacity: 0; border: 0; padding: 0; font-size: 16px; }
   </style>
 </head>
@@ -24,6 +26,7 @@
   <img id="screen" alt="Selected window" draggable="false">
   <video id="video" autoplay muted playsinline></video>
   <div id="message">Connecting...</div>
+  <div id="notice" class="hidden" role="status"></div>
   <input id="keyboard" type="text" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="Remote text input">
   <script src="/app.js"></script>
 </body>

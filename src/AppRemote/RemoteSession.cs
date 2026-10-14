@@ -28,7 +28,7 @@ internal sealed class RemoteSession : IDisposable
         get { lock (_gate) return _frame; }
     }
 
-    public void Select(WindowEntry entry)
+    public void Select(WindowEntry entry, bool activate = true)
     {
         if (!NativeWindows.IsSameWindow(entry)) throw new InvalidOperationException("The window has closed.");
         var next = new WindowCapture(entry.Handle);
@@ -50,7 +50,22 @@ internal sealed class RemoteSession : IDisposable
         }
         previous?.Dispose();
         Changed?.Invoke();
-        NativeWindows.Activate(entry.Handle);
+        if (activate) NativeWindows.Activate(entry.Handle);
+    }
+
+    public void Stop()
+    {
+        WindowCapture? capture;
+        lock (_gate)
+        {
+            capture = _capture;
+            if (capture is null) return;
+            _capture = null;
+            _window = null;
+            _frame = null;
+        }
+        capture.Dispose();
+        Changed?.Invoke();
     }
 
     private void OnFrame(WindowCapture source, byte[] bytes, int width, int height)

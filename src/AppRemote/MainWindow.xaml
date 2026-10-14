@@ -1,9 +1,10 @@
 <Window x:Class="AppRemote.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="App Remote" Icon="Assets/app.ico" Height="610" Width="760" MinHeight="520" MinWidth="630"
+        Title="App Remote" Icon="Assets/app.ico" Height="740" Width="900" MinHeight="600" MinWidth="630"
         Background="#10151D" Foreground="#F2F5F8" FontFamily="Segoe UI"
-        Loaded="Window_Loaded" Closed="Window_Closed">
+        Loaded="Window_Loaded" Closing="Window_Closing" Closed="Window_Closed"
+        StateChanged="Window_StateChanged">
     <Window.Resources>
         <Style TargetType="Button">
             <Setter Property="Padding" Value="16,9" />
@@ -39,22 +40,69 @@
             <ListBox x:Name="WindowList" Grid.Row="1" Background="#1A2330" Foreground="White" BorderBrush="#34465C"
                      BorderThickness="1" FontSize="14" Padding="6" MouseDoubleClick="WindowList_DoubleClick" />
             <StackPanel Grid.Row="2" Margin="0,12,0,0">
-                <Button Content="Control this window" Background="#1768B3" HorizontalAlignment="Left" Click="Select_Click" />
+                <StackPanel Orientation="Horizontal">
+                    <Button Content="Control this window" Background="#1768B3" Click="Select_Click" />
+                    <Button x:Name="StopButton" Content="Stop" IsEnabled="False" Click="Stop_Click" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                    <TextBlock Text="Video" VerticalAlignment="Center" Margin="0,0,10,0" />
+                    <ComboBox x:Name="VideoModePicker" Width="120" SelectionChanged="VideoMode_SelectionChanged"
+                              ToolTip="Auto prefers H.265, then H.264, then JPEG.">
+                        <ComboBoxItem Content="Auto" />
+                        <ComboBoxItem Content="H.265" />
+                        <ComboBoxItem Content="H.264" />
+                        <ComboBoxItem Content="JPEG" />
+                    </ComboBox>
+                </StackPanel>
+                <TextBlock Text="Auto prefers H.265, then H.264 or JPEG. Manual modes use JPEG if unavailable."
+                           Foreground="#A9B8C7" FontSize="11" Margin="0,4,0,0" TextWrapping="Wrap" />
+                <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                    <TextBlock Text="Port" VerticalAlignment="Center" Margin="0,0,12,0" />
+                    <TextBox x:Name="PortTextBox" Width="72" MaxLength="5" VerticalContentAlignment="Center"
+                             ToolTip="TCP port (1–65535)" KeyDown="PortTextBox_KeyDown" />
+                    <Button x:Name="ApplyPortButton" Content="Apply" Margin="8,0,0,0" Click="ApplyPort_Click" />
+                </StackPanel>
+                <CheckBox x:Name="RestoreLastWindowCheck" Margin="0,10,0,0"
+                          Checked="RestoreLastWindow_Changed" Unchecked="RestoreLastWindow_Changed"
+                          VerticalContentAlignment="Top">
+                    <StackPanel>
+                        <TextBlock Text="Restore last window on startup" Foreground="#F2F5F8" />
+                        <TextBlock Text="If the last selected window is open, sharing starts automatically. Stop clears the saved window."
+                                   Foreground="#A9B8C7" FontSize="11" Margin="0,4,0,0" TextWrapping="Wrap" />
+                    </StackPanel>
+                </CheckBox>
                 <TextBlock x:Name="SelectedText" Text="No window selected" Foreground="#A9B8C7" Margin="0,12,0,0" TextWrapping="Wrap" />
+                <TextBlock x:Name="ClientStatusText" Text="No browser connected" Foreground="#A9B8C7" Margin="0,4,0,0" TextWrapping="Wrap" />
             </StackPanel>
         </Grid>
         <Border Grid.Row="2" Grid.Column="1" Background="#1A2330" CornerRadius="12" Padding="16">
-            <StackPanel>
-                <TextBlock Text="Connect your phone" FontSize="17" FontWeight="SemiBold" />
-                <TextBlock Text="Scan the QR code on the same Wi-Fi network." Foreground="#A9B8C7" TextWrapping="Wrap" Margin="0,8,0,14" />
-                <Border Background="White" Width="205" Height="205" HorizontalAlignment="Center" Padding="8">
-                    <Image x:Name="QrImage" Stretch="Uniform" />
-                </Border>
-                <TextBlock x:Name="UrlText" Text="Starting server..." TextWrapping="Wrap" FontSize="11" Foreground="#B4D5FF" Margin="0,12,0,0" />
-                <Button x:Name="CopyUrlButton" Content="Copy URL" IsEnabled="False" HorizontalAlignment="Left" Margin="0,8,0,0" Click="CopyUrl_Click" />
-                <TextBlock Text="Open the QR code in your phone's browser." Foreground="#A9B8C7" TextWrapping="Wrap" Margin="0,14,0,0" />
-            </StackPanel>
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <StackPanel>
+                    <TextBlock Text="Connect your phone" FontSize="17" FontWeight="SemiBold" />
+                    <ComboBox x:Name="ConnectionMode" Visibility="Collapsed" Margin="0,8,0,0"
+                              SelectionChanged="ConnectionMode_SelectionChanged" />
+                    <TextBlock Text="Choose an address your phone can reach." Foreground="#A9B8C7"
+                               TextWrapping="Wrap" Margin="0,8,0,4" />
+                </StackPanel>
+                <Viewbox Grid.Row="1" Width="160" MaxHeight="160" Stretch="Uniform" StretchDirection="DownOnly"
+                         HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,4">
+                    <Border Background="White" Width="160" Height="160" Padding="6">
+                        <Image x:Name="QrImage" Stretch="Uniform" />
+                    </Border>
+                </Viewbox>
+                <TextBlock x:Name="UrlText" Grid.Row="2" Text="Starting server..." TextWrapping="Wrap"
+                           FontSize="11" Foreground="#B4D5FF" Margin="0,4,0,0" />
+                <Button x:Name="CopyUrlButton" Grid.Row="3" Content="Copy URL" IsEnabled="False"
+                        HorizontalAlignment="Left" Margin="0,8,0,0" Click="CopyUrl_Click" />
+            </Grid>
         </Border>
-        <TextBlock x:Name="StatusText" Grid.Row="3" Grid.ColumnSpan="2" Text="Starting..." Foreground="#89D7A3" Margin="0,20,0,0" />
+        <TextBlock x:Name="StatusText" Grid.Row="3" Grid.ColumnSpan="2" Text="Starting..." Foreground="#89D7A3"
+                   TextWrapping="Wrap" Margin="0,20,0,0" />
     </Grid>
 </Window>

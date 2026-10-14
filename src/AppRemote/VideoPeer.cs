@@ -1,4 +1,5 @@
 using System.IO;
+using System.Net;
 using SIPSorcery.Media;
 using SIPSorcery.Net;
 using SIPSorceryMedia.Abstractions;
@@ -11,6 +12,7 @@ internal sealed class VideoPeer : IDisposable
     private readonly RemoteSession _session;
     private readonly RTCPeerConnection _peer;
     private readonly FFmpegVideoEncoder _encoder;
+    private readonly VideoCodecsEnum _codec;
     private readonly object _gate = new();
     private (byte[] Bytes, int Width, int Height)? _pending;
     private readonly SemaphoreSlim _signal = new(0, 1);
@@ -19,19 +21,25 @@ internal sealed class VideoPeer : IDisposable
     private bool _disposed;
 
     public event Action<bool>? ActiveChanged;
+    public event Action<string>? Failed;
+    public VideoPreference CodecMode { get; }
 
-    public VideoPeer(RemoteSession session)
+    public VideoPeer(RemoteSession session, VideoPreference codecMode, IPAddress? bindAddress = null)
     {
+        if (codecMode is not (VideoPreference.H264 or VideoPreference.H265))
+            throw new ArgumentOutOfRangeException(nameof(codecMode));
         _session = session;
+        CodecMode = codecMode;
+        _codec = codecMode == VideoPreference.H265 ? VideoCodecsEnum.H265 : VideoCodecsEnum.H264;
         FFmpegInit.Initialise(FfmpegLogLevelEnum.AV_LOG_ERROR, FindFfmpeg());
         _encoder = new FFmpegVideoEncoder(new Dictionary<string, string>
         {
             ["preset"] = "ultrafast",
             ["tune"] = "zerolatency"
         });
-        _peer = new RTCPeerConnection(null);
-        var formats = _encoder.SupportedFormats.Where(f => f.Codec == VideoCodecsEnum.H264).ToList();
-        if (formats.Count == 0) throw new InvalidOperationException("H.264 is unavailable.");
+        _peer = new RTCPeerConnection(new RTCConfiguration { X_BindAddress = bindAddress });
+        var formats = _encoder.SupportedFormats.Where(f => f.Codec == _codec).ToList();
+        if (formats.Count == 0) throw new InvalidOperationException($"{codecMode} is unavailable.");
         _peer.addTrack(new MediaStreamTrack(formats, MediaStreamStatusEnum.SendOnly));
         _peer.onconnectionstatechange += state =>
         {
@@ -65,6 +73,7 @@ internal sealed class VideoPeer : IDisposable
 
     private async Task SendLoopAsync()
     {
+        var emptyFrames = 0;
         try
         {
             while (!_stop.IsCancellationRequested)
@@ -76,11 +85,17 @@ internal sealed class VideoPeer : IDisposable
                 try
                 {
                     var (pixels, width, height) = Scale(frame.Value.Bytes, frame.Value.Width, frame.Value.Height);
-                    var encoded = _encoder.EncodeVideo(width, height, pixels, VideoPixelFormatsEnum.Bgra, VideoCodecsEnum.H264);
-                    if (encoded is { Length: > 0 }) _peer.SendVideo(80, encoded);
+                    var encoded = _encoder.EncodeVideo(width, height, pixels, VideoPixelFormatsEnum.Bgra, _codec);
+                    if (encoded is { Length: > 0 })
+                    {
+                        emptyFrames = 0;
+                        _peer.SendVideo(80, encoded);
+                    }
+                    else if (++emptyFrames >= 30) throw new InvalidOperationException("The encoder returned no video frames.");
                 }
-                catch (Exception)
+                catch (Exception ex)
                 {
+                    Failed?.Invoke($"{CodecMode} encoding failed; using JPEG. {ex.Message}");
                     Dispose();
                     break;
                 }

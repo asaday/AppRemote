@@ -15,34 +15,65 @@ using Microsoft.Extensions.Logging;
 
 namespace AppRemote;
 
+internal sealed record ConnectionOption(string Label, string Address, string Url);
+
 internal sealed class RemoteServer : IAsyncDisposable
 {
-    private const int Port = 8765;
+    private const int DefaultPort = 8765;
+    private readonly int _port;
     private readonly RemoteSession _session;
     private readonly InputController _input;
     private readonly string _legacyKey;
     private readonly string _key;
+    private readonly object _clientGate = new();
+    private readonly object _videoGate = new();
+    private ClientConnection? _activeClient;
     private WebApplication? _app;
     private VideoPeer? _videoPeer;
     private volatile bool _videoActive;
-    private int _busy;
+    private VideoPreference? _activeCodec;
+    private VideoPreference _videoPreference = VideoPreference.Auto;
+    private int _videoModeVersion;
 
     public event Action<bool>? ClientChanged;
-    public event Action<bool>? VideoModeChanged;
+    public event Action<VideoPreference?>? VideoModeChanged;
+    public event Action<string>? VideoFailed;
     public string? Url { get; private set; }
+    public IReadOnlyList<ConnectionOption> ConnectionOptions { get; private set; } = [];
 
-    public RemoteServer(RemoteSession session)
+    private sealed class ClientConnection(WebSocket socket)
+    {
+        public string Id { get; } = Guid.NewGuid().ToString("N");
+        public WebSocket Socket { get; } = socket;
+        public volatile bool Replaced;
+    }
+
+    public RemoteServer(RemoteSession session, int port = DefaultPort)
     {
         _session = session;
+        _port = port;
         _input = new InputController(session);
         _legacyKey = LoadOrCreateKey();
         _key = CreateShortKey(_legacyKey);
     }
 
+    public void SetVideoPreference(VideoPreference preference)
+    {
+        if (!Enum.IsDefined(preference)) throw new ArgumentOutOfRangeException(nameof(preference));
+        lock (_clientGate)
+        {
+            if (_videoPreference == preference) return;
+            _videoPreference = preference;
+            _videoModeVersion++;
+        }
+        Interlocked.Exchange(ref _videoPeer, null)?.Dispose();
+        SetVideoMode(null);
+    }
+
     public async Task StartAsync()
     {
         var builder = WebApplication.CreateBuilder();
-        builder.WebHost.ConfigureKestrel(options => options.ListenAnyIP(Port));
+        builder.WebHost.ConfigureKestrel(options => options.ListenAnyIP(_port));
         builder.Logging.ClearProviders();
         var app = builder.Build();
         app.UseWebSockets();
@@ -77,36 +108,97 @@ internal sealed class RemoteServer : IAsyncDisposable
         app.Map("/ws", HandleSocketAsync);
         app.MapPost("/offer", async (HttpContext context) =>
         {
-            if (!HasKey(context) || !SameOrigin(context) || Volatile.Read(ref _busy) == 0)
+            var clientId = context.Request.Query["client"].ToString();
+            if (!int.TryParse(context.Request.Query["version"], out var version) ||
+                !HasKey(context) || !SameOrigin(context) || !IsCurrentClient(clientId, version))
                 return Results.StatusCode(StatusCodes.Status403Forbidden);
             if (context.Request.ContentLength is > 65536) return Results.BadRequest();
             using var reader = new StreamReader(context.Request.Body);
             var offer = await reader.ReadToEndAsync(context.RequestAborted);
             if (offer.Length > 65536) return Results.BadRequest();
-            VideoPeer? peer = null;
-            try
+            var preference = GetVideoPreference();
+            if (preference == VideoPreference.Jpeg)
+                return Results.StatusCode(StatusCodes.Status409Conflict);
+            var desired = preference switch
             {
-                peer = new VideoPeer(_session);
-                peer.ActiveChanged += active =>
+                VideoPreference.Auto => new[] { VideoPreference.H265, VideoPreference.H264 },
+                _ => new[] { preference }
+            };
+            var candidates = desired.Where(codec => OfferHasCodec(offer, codec)).ToArray();
+            if (candidates.Length == 0)
+            {
+                var error = preference == VideoPreference.Auto
+                    ? "No supported WebRTC video codec; using JPEG."
+                    : $"{FormatCodec(preference)} is unavailable in this browser; using JPEG.";
+                if (IsCurrentClient(clientId, version)) VideoFailed?.Invoke(error);
+                return Results.Problem(error, statusCode: StatusCodes.Status415UnsupportedMediaType);
+            }
+            var requestedAddress = ConnectionOptions.Any(option =>
+                option.Address.Equals(context.Request.Host.Host, StringComparison.OrdinalIgnoreCase)) &&
+                IPAddress.TryParse(context.Request.Host.Host, out var address) ? address : null;
+            Exception? lastError = null;
+            foreach (var codec in candidates)
+            {
+                VideoPeer? peer = null;
+                try
                 {
-                    if (ReferenceEquals(Volatile.Read(ref _videoPeer), peer)) SetVideoMode(active);
-                };
-                var previous = Interlocked.Exchange(ref _videoPeer, peer);
-                previous?.Dispose();
-                var answer = await peer.AcceptOfferAsync(offer);
-                return Results.Text(answer, "application/sdp");
+                    peer = new VideoPeer(_session, codec, requestedAddress);
+                    var currentPeer = peer;
+                    peer.ActiveChanged += active =>
+                    {
+                        if (ReferenceEquals(Volatile.Read(ref _videoPeer), currentPeer))
+                            SetVideoMode(active ? currentPeer.CodecMode : null);
+                    };
+                    peer.Failed += message =>
+                    {
+                        if (ReferenceEquals(Volatile.Read(ref _videoPeer), currentPeer))
+                            VideoFailed?.Invoke(message);
+                    };
+                    VideoPeer? previous;
+                    lock (_clientGate)
+                    {
+                        if (_activeClient?.Id != clientId || _videoModeVersion != version)
+                        {
+                            peer.Dispose();
+                            return Results.StatusCode(StatusCodes.Status409Conflict);
+                        }
+                        previous = Interlocked.Exchange(ref _videoPeer, peer);
+                    }
+                    previous?.Dispose();
+                    var answer = await peer.AcceptOfferAsync(offer);
+                    if (!IsCurrentClient(clientId, version))
+                    {
+                        Interlocked.CompareExchange(ref _videoPeer, null, peer);
+                        peer.Dispose();
+                        return Results.StatusCode(StatusCodes.Status409Conflict);
+                    }
+                    return Results.Text(answer, "application/sdp");
+                }
+                catch (Exception ex)
+                {
+                    lastError = ex;
+                    if (peer is not null)
+                    {
+                        var removed = Interlocked.CompareExchange(ref _videoPeer, null, peer);
+                        peer.Dispose();
+                        if (ReferenceEquals(removed, peer)) SetVideoMode(null);
+                    }
+                }
             }
-            catch (Exception ex)
-            {
-                peer?.Dispose();
-                return Results.Problem(ex.Message, statusCode: 503);
-            }
+            var failure = $"{FormatCodec(preference)} could not start; using JPEG. {lastError?.Message}";
+            if (IsCurrentClient(clientId, version)) VideoFailed?.Invoke(failure);
+            return Results.Problem(failure, statusCode: 503);
         });
 
-        await app.StartAsync();
+        try { await app.StartAsync(); }
+        catch
+        {
+            await app.DisposeAsync();
+            throw;
+        }
         _app = app;
-        var ip = GetLanAddress();
-        Url = $"http://{ip}:{Port}/?key={_key}";
+        ConnectionOptions = GetConnectionOptions();
+        Url = ConnectionOptions[0].Url;
     }
 
     private async Task HandleSocketAsync(HttpContext context)
@@ -116,18 +208,25 @@ internal sealed class RemoteServer : IAsyncDisposable
             context.Response.StatusCode = StatusCodes.Status403Forbidden;
             return;
         }
-        if (Interlocked.CompareExchange(ref _busy, 1, 0) != 0)
+        using var socket = await context.WebSockets.AcceptWebSocketAsync();
+        var connection = new ClientConnection(socket);
+        lock (_clientGate)
         {
-            context.Response.StatusCode = StatusCodes.Status409Conflict;
-            return;
+            if (_activeClient is { } previous) previous.Replaced = true;
+            _activeClient = connection;
         }
-
+        _input.Release();
+        Interlocked.Exchange(ref _videoPeer, null)?.Dispose();
+        SetVideoMode(null);
+        ClientChanged?.Invoke(true);
         try
         {
-            using var socket = await context.WebSockets.AcceptWebSocketAsync();
-            ClientChanged?.Invoke(true);
+            var (preference, version) = GetVideoSettings();
+            var ready = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new
+                { type = "ready", clientId = connection.Id, mode = preference.ToString(), version }));
+            await socket.SendAsync(ready, WebSocketMessageType.Text, true, context.RequestAborted);
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted);
-            var sender = SendFramesAsync(socket, linked.Token);
+            var sender = SendFramesAsync(connection, version, linked.Token);
             var buffer = new byte[4096];
             var closeRequested = false;
             try
@@ -137,6 +236,7 @@ internal sealed class RemoteServer : IAsyncDisposable
                     var message = await socket.ReceiveAsync(buffer, linked.Token);
                     if (message.MessageType == WebSocketMessageType.Close) { closeRequested = true; break; }
                     if (message.MessageType != WebSocketMessageType.Text || !message.EndOfMessage) continue;
+                    if (!IsCurrentClient(connection.Id)) continue;
                     try { _input.Handle(Encoding.UTF8.GetString(buffer, 0, message.Count)); }
                     catch (JsonException) { /* Ignore malformed controls. */ }
                 }
@@ -146,29 +246,87 @@ internal sealed class RemoteServer : IAsyncDisposable
             finally
             {
                 linked.Cancel();
-                try { await sender; } catch (OperationCanceledException) { }
+                try { await sender; } catch (Exception ex) when (ex is OperationCanceledException or WebSocketException) { }
                 if (closeRequested && socket.State == WebSocketState.CloseReceived)
                 {
                     try { await socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "closed", CancellationToken.None); }
                     catch (WebSocketException) { }
                 }
+            }
+        }
+        finally
+        {
+            bool wasCurrent;
+            lock (_clientGate)
+            {
+                wasCurrent = ReferenceEquals(_activeClient, connection);
+                if (wasCurrent) _activeClient = null;
+            }
+            if (wasCurrent)
+            {
                 _input.Release();
                 Interlocked.Exchange(ref _videoPeer, null)?.Dispose();
-                SetVideoMode(false);
+                SetVideoMode(null);
                 ClientChanged?.Invoke(false);
             }
         }
-        finally { Interlocked.Exchange(ref _busy, 0); }
     }
 
-    private async Task SendFramesAsync(WebSocket socket, CancellationToken stop)
+    private bool IsCurrentClient(string id, int? version = null)
     {
+        lock (_clientGate) return _activeClient?.Id == id &&
+            (version is null || _videoModeVersion == version);
+    }
+
+    private VideoPreference GetVideoPreference()
+    {
+        lock (_clientGate) return _videoPreference;
+    }
+
+    private (VideoPreference Preference, int Version) GetVideoSettings()
+    {
+        lock (_clientGate) return (_videoPreference, _videoModeVersion);
+    }
+
+    private static bool OfferHasCodec(string offer, VideoPreference codec)
+    {
+        var name = codec == VideoPreference.H265 ? "H265" : "H264";
+        return offer.Split('\n').Any(line => line.Trim().StartsWith("a=rtpmap:", StringComparison.OrdinalIgnoreCase) &&
+            line.Contains($" {name}/90000", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string FormatCodec(VideoPreference codec) => codec switch
+    {
+        VideoPreference.H264 => "H.264",
+        VideoPreference.H265 => "H.265",
+        VideoPreference.Jpeg => "JPEG",
+        _ => "WebRTC video"
+    };
+
+    private async Task SendFramesAsync(ClientConnection connection, int announcedVersion, CancellationToken stop)
+    {
+        var socket = connection.Socket;
         long lastSequence = -1;
         var waitingSent = false;
         while (socket.State == WebSocketState.Open && !stop.IsCancellationRequested)
         {
+            if (connection.Replaced)
+            {
+                var notice = Encoding.UTF8.GetBytes("{\"type\":\"replaced\"}");
+                await socket.SendAsync(notice, WebSocketMessageType.Text, true, stop);
+                await socket.CloseOutputAsync((WebSocketCloseStatus)4001, "Replaced by another device", stop);
+                break;
+            }
+            var (preference, version) = GetVideoSettings();
+            if (version != announcedVersion)
+            {
+                var update = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new
+                    { type = "videoMode", mode = preference.ToString(), version }));
+                await socket.SendAsync(update, WebSocketMessageType.Text, true, stop);
+                announcedVersion = version;
+            }
             var frame = _session.LatestFrame;
-            if (frame is null)
+            if (_session.Selected is null)
             {
                 if (!waitingSent)
                 {
@@ -177,11 +335,14 @@ internal sealed class RemoteServer : IAsyncDisposable
                     waitingSent = true;
                 }
             }
-            else if (!_videoActive && frame.Sequence != lastSequence)
+            else
             {
-                await socket.SendAsync(frame.Jpeg, WebSocketMessageType.Binary, true, stop);
-                lastSequence = frame.Sequence;
                 waitingSent = false;
+                if (!_videoActive && frame is not null && frame.Sequence != lastSequence)
+                {
+                    await socket.SendAsync(frame.Jpeg, WebSocketMessageType.Binary, true, stop);
+                    lastSequence = frame.Sequence;
+                }
             }
             await Task.Delay(80, stop);
         }
@@ -196,12 +357,16 @@ internal sealed class RemoteServer : IAsyncDisposable
             Encoding.ASCII.GetBytes(supplied), Encoding.ASCII.GetBytes(expected));
     }
 
-    private void SetVideoMode(bool active)
+    private void SetVideoMode(VideoPreference? codec)
     {
-        if (_videoActive == active) return;
-        _videoActive = active;
-        _session.SetVideoActive(active);
-        VideoModeChanged?.Invoke(active);
+        lock (_videoGate)
+        {
+            if (_activeCodec == codec) return;
+            _activeCodec = codec;
+            _videoActive = codec is not null;
+            _session.SetVideoActive(_videoActive);
+            VideoModeChanged?.Invoke(codec);
+        }
     }
 
     private static bool SameOrigin(HttpContext context)
@@ -212,8 +377,10 @@ internal sealed class RemoteServer : IAsyncDisposable
                uri.Port == context.Request.Host.Port;
     }
 
-    private static string GetLanAddress()
+    private List<ConnectionOption> GetConnectionOptions()
     {
+        var options = new List<ConnectionOption>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var interfaces = NetworkInterface.GetAllNetworkInterfaces()
             .Where(nic => nic.OperationalStatus == OperationalStatus.Up && nic.NetworkInterfaceType != NetworkInterfaceType.Loopback)
             .OrderByDescending(nic => nic.GetIPProperties().GatewayAddresses.Count > 0)
@@ -223,11 +390,17 @@ internal sealed class RemoteServer : IAsyncDisposable
             foreach (var address in nic.GetIPProperties().UnicastAddresses)
             {
                 var ip = address.Address;
-                if (ip.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(ip) &&
-                    !ip.ToString().StartsWith("169.254.", StringComparison.Ordinal)) return ip.ToString();
+                var value = ip.ToString();
+                if (ip.AddressFamily != AddressFamily.InterNetwork || IPAddress.IsLoopback(ip) ||
+                    value.StartsWith("169.254.", StringComparison.Ordinal) || !seen.Add(value)) continue;
+                options.Add(new ConnectionOption($"{value} - {nic.Name}", value,
+                    $"http://{value}:{_port}/?key={_key}"));
             }
         }
-        return "127.0.0.1";
+        if (options.Count == 0)
+            options.Add(new ConnectionOption("This PC - 127.0.0.1", "127.0.0.1",
+                $"http://127.0.0.1:{_port}/?key={_key}"));
+        return options;
     }
 
     private static string LoadOrCreateKey()
@@ -254,6 +427,7 @@ internal sealed class RemoteServer : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         _input.Release();
+        lock (_clientGate) _activeClient = null;
         Interlocked.Exchange(ref _videoPeer, null)?.Dispose();
         if (_app is not null) await _app.DisposeAsync();
     }

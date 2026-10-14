@@ -11,6 +11,7 @@
     <PackageReference Include="SIPSorceryMedia.FFmpeg" Version="10.0.17" />
     <Compile Include="../../src/AppRemote/Capture/WindowCapture.cs" Link="WindowCapture.cs" />
     <Compile Include="../../src/AppRemote/RemoteSession.cs" Link="RemoteSession.cs" />
+    <Compile Include="../../src/AppRemote/AppSettings.cs" Link="AppSettings.cs" />
     <Compile Include="../../src/AppRemote/RemoteServer.cs" Link="RemoteServer.cs" />
     <Compile Include="../../src/AppRemote/VideoPeer.cs" Link="VideoPeer.cs" />
     <Compile Include="../../src/AppRemote/Windows/NativeWindows.cs" Link="NativeWindows.cs" />
