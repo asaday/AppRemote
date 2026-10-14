@@ -4,6 +4,10 @@ App Remote lets you view and control one selected Windows window from a phone on
 
 Video uses H.264 over WebRTC when available, with JPEG over WebSocket as a fallback. The Windows app shows which video transport is active.
 
+![App Remote Windows app showing window selection and phone connection panel](docs/images/app-remote-windows.png)
+
+*Windows app preview. Window names and connection details are illustrative.*
+
 ## Features
 
 - Select any eligible Windows window to stream
