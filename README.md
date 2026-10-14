@@ -8,6 +8,10 @@ Video uses H.264 over WebRTC when available, with JPEG over WebSocket as a fallb
 
 *Windows app preview. Window names and connection details are illustrative.*
 
+## Download
+
+Download `AppRemote-v1.0.0-win-x64.zip` from the [latest release](https://github.com/asaday/AppRemote/releases/latest). Extract the whole `AppRemote` folder and run `AppRemote.exe`. The release includes the .NET runtime, so the .NET SDK is not needed to run it.
+
 ## Features
 
 - Select any eligible Windows window to stream
@@ -20,7 +24,6 @@ Video uses H.264 over WebRTC when available, with JPEG over WebSocket as a fallb
 
 - Windows 10 version 2004 or later, or Windows 11 (x64)
 - A phone on the same local network (Safari on iPhone or Chrome on Android)
-- [.NET 10 Desktop Runtime and ASP.NET Core Runtime](https://dotnet.microsoft.com/download/dotnet/10.0), or the .NET 10 SDK, which includes both
 - [FFmpeg (Shared) 8.1](https://github.com/GyanD/codexffmpeg/releases/tag/8.1) for H.264 video
 
 Without FFmpeg, the app can still stream JPEG frames. On Windows, you can install the shared FFmpeg build with:
@@ -42,6 +45,8 @@ This publishes the app to `dist/AppRemote/`. The equivalent command is:
 ```powershell
 dotnet publish src/AppRemote/AppRemote.csproj -c Release -r win-x64 --self-contained false -o dist/AppRemote
 ```
+
+This local build requires the [.NET 10 Desktop Runtime and ASP.NET Core Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) on the PC that runs it. The .NET 10 SDK includes both.
 
 Close App Remote before rebuilding it. To move the app to another PC, copy the entire `dist/AppRemote/` directory, not only `AppRemote.exe`.
 
