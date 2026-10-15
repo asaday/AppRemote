@@ -222,11 +222,11 @@
     updateRemoteCursor();
   }
 
-  function connect() {
+  function connect(resumeOnly = false) {
     replaced = false;
     modeVersion = -1;
     const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    socket = new WebSocket(`${scheme}//${location.host}/ws?key=${encodeURIComponent(key)}`);
+    socket = new WebSocket(`${scheme}//${location.host}/ws?key=${encodeURIComponent(key)}${resumeOnly ? '&resume=1' : ''}`);
     socket.binaryType = 'blob';
     socket.onopen = () => {
       show('Connecting to App Remote...');
@@ -278,8 +278,10 @@
       video.style.display = 'none';
       image.style.visibility = 'hidden';
       updateRemoteCursor();
-      if (replaced || event.code === 4001) {
-        show('Another device is connected');
+      if (replaced || resumeOnly || event.code === 4001 || event.code === 4002) {
+        show('Another device is connected. Waiting to reconnect...');
+        clearTimeout(reconnectTimer);
+        reconnectTimer = setTimeout(() => connect(true), 5000);
         return;
       }
       show('Disconnected. Reconnecting...');

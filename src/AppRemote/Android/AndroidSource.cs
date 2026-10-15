@@ -11,6 +11,8 @@ namespace AppRemote.Android;
 
 internal sealed class AndroidSource : IAsyncDisposable
 {
+    public const int VideoBitRate = 4_000_000;
+
     private readonly string _adb;
     private readonly string _serial;
     private readonly string _remotePath;
@@ -21,6 +23,7 @@ internal sealed class AndroidSource : IAsyncDisposable
     private readonly SemaphoreSlim _controlLock = new(1, 1);
     private readonly CancellationTokenSource _stop = new();
     private readonly Task _reader;
+    private int _disposed;
     private byte[]? _config;
     private readonly VideoPreference _codec;
     private bool _touchDown;
@@ -69,7 +72,7 @@ internal sealed class AndroidSource : IAsyncDisposable
                 "app_process", "/", "com.genymobile.scrcpy.Server", "5.0.1",
                 "scid=" + scid, "tunnel_forward=true", "audio=false", "control=true",
                 "video_codec=" + (codec == VideoPreference.H265 ? "h265" : "h264"),
-                "video_bit_rate=4000000", "max_size=1280",
+                "video_bit_rate=" + VideoBitRate, "max_size=1280",
                 "max_fps=30", "video_codec_options=i-frame-interval:int=1",
                 "send_device_meta=false");
             server = Process.Start(info) ?? throw new IOException("Could not start the scrcpy server.");
@@ -270,6 +273,7 @@ internal sealed class AndroidSource : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         _stop.Cancel();
         _socket.Dispose();
         _control.Dispose();

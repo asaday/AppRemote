@@ -13,6 +13,7 @@ internal sealed class RemoteSession : IDisposable
     private CapturedFrame? _frame;
     private long _sequence;
     private bool _videoActive;
+    private bool _clientConnected;
 
     public event Action? Changed;
     public event Action<string>? CaptureFaulted;
@@ -31,20 +32,13 @@ internal sealed class RemoteSession : IDisposable
     public void Select(WindowEntry entry, bool activate = true)
     {
         if (!NativeWindows.IsSameWindow(entry)) throw new InvalidOperationException("The window has closed.");
-        var next = new WindowCapture(entry.Handle);
-        next.FrameReady += (bytes, width, height) => OnFrame(next, bytes, width, height);
-        next.RawFrameReady += (bytes, width, height) => OnRawFrame(next, bytes, width, height);
-        next.Closed += () => OnClosed(next);
-        next.Faulted += message => CaptureFaulted?.Invoke(message);
-        try { next.Start(); }
-        catch { next.Dispose(); throw; }
-
+        WindowCapture? next = null;
         WindowCapture? previous;
         lock (_gate)
         {
+            if (_clientConnected) next = CreateCapture(entry);
             previous = _capture;
             _capture = next;
-            next.JpegEnabled = !_videoActive;
             _window = entry;
             _frame = null;
         }
@@ -59,13 +53,57 @@ internal sealed class RemoteSession : IDisposable
         lock (_gate)
         {
             capture = _capture;
-            if (capture is null) return;
+            if (capture is null && _window is null) return;
             _capture = null;
             _window = null;
             _frame = null;
         }
-        capture.Dispose();
+        capture?.Dispose();
         Changed?.Invoke();
+    }
+
+    public void SetClientConnected(bool connected)
+    {
+        WindowCapture? previous;
+        string? fault = null;
+        var selectionLost = false;
+        lock (_gate)
+        {
+            if (_clientConnected == connected) return;
+            _clientConnected = connected;
+            previous = _capture;
+            _capture = null;
+            _frame = null;
+            if (connected && _window is { } entry)
+            {
+                try
+                {
+                    if (!NativeWindows.IsSameWindow(entry)) throw new InvalidOperationException("The window has closed.");
+                    _capture = CreateCapture(entry);
+                }
+                catch (Exception ex)
+                {
+                    fault = ex.Message;
+                    _window = null;
+                    selectionLost = true;
+                }
+            }
+        }
+        previous?.Dispose();
+        if (fault is not null) CaptureFaulted?.Invoke(fault);
+        if (selectionLost) Changed?.Invoke();
+    }
+
+    private WindowCapture CreateCapture(WindowEntry entry)
+    {
+        var capture = new WindowCapture(entry.Handle);
+        capture.FrameReady += (bytes, width, height) => OnFrame(capture, bytes, width, height);
+        capture.RawFrameReady += (bytes, width, height) => OnRawFrame(capture, bytes, width, height);
+        capture.Closed += () => OnClosed(capture);
+        capture.Faulted += message => CaptureFaulted?.Invoke(message);
+        capture.JpegEnabled = !_videoActive;
+        try { capture.Start(); return capture; }
+        catch { capture.Dispose(); throw; }
     }
 
     private void OnFrame(WindowCapture source, byte[] bytes, int width, int height)

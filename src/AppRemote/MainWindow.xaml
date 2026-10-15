@@ -101,7 +101,9 @@
                                     <ComboBoxItem Content="H.264" /><ComboBoxItem Content="JPEG" />
                                 </ComboBox>
                             </StackPanel>
-                            <TextBlock Text="Auto prefers H.265, then H.264 or JPEG. Manual modes use JPEG if unavailable."
+                            <TextBlock Text="Auto prefers H.264, then H.265 or JPEG. Choose H.265 for higher compression."
+                                       Foreground="#A9B8C7" FontSize="11" Margin="0,4,0,0" TextWrapping="Wrap" />
+                            <TextBlock Text="Bitrate: encoder default (no fixed target)"
                                        Foreground="#A9B8C7" FontSize="11" Margin="0,4,0,0" TextWrapping="Wrap" />
                             <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
                                 <TextBlock Text="Phone input" Foreground="#F2F5F8" VerticalAlignment="Center" Margin="0,0,10,0" />
@@ -141,8 +143,10 @@
                                     <ComboBoxItem Content="Auto" /><ComboBoxItem Content="H.265" /><ComboBoxItem Content="H.264" />
                                 </ComboBox>
                             </StackPanel>
-                            <TextBlock Text="Auto tries H.265, then H.264. Video is encoded on the device."
+                            <TextBlock Text="Auto tries H.264, then H.265. Choose H.265 for higher compression."
                                        Foreground="#A9B8C7" FontSize="11" Margin="0,4,0,0" TextWrapping="Wrap" />
+                            <TextBlock x:Name="AndroidBitrateText" Foreground="#A9B8C7" FontSize="11"
+                                       Margin="0,4,0,0" TextWrapping="Wrap" />
                             <Expander Header="Connect over Wi-Fi" Margin="0,12,0,0" Foreground="White">
                                 <StackPanel Margin="12,8,0,0">
                                     <TextBlock Text="Connection address (IP:port)" Foreground="#A9B8C7" />

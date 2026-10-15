@@ -24,7 +24,8 @@ Download the Windows x64 ZIP from the [latest release](https://github.com/asaday
 - Optionally send input to the selected window without bringing it to the foreground (experimental)
 - Connect with a QR code or the **Copy URL** button
 - Add a shortcut with an icon to the iPhone Home Screen
-- One active browser connection at a time; a newer connection takes over
+- One active browser connection at a time; a newer connection takes over, and the previous page retries every five seconds until the connection is free
+- When no browser is connected, the selected Windows window stays remembered without capture or JPEG encoding, and the Android encoder stops until the next connection
 - Choose Auto, H.265, H.264, or JPEG for Windows video; Auto, H.265, or H.264 for Android video
 
 ## Requirements
@@ -69,7 +70,7 @@ Minimizing or closing the Windows window hides it in the system tray while the s
 
 Enable **Restore last source on startup** to resume the previous Windows window or Android device when it is available at launch. **Stop sharing** clears the remembered source. The setting is stored for the current Windows user.
 
-Use the Windows app's **Video** menu to choose the transport. **Auto** prefers H.265 when the browser offers it and the PC can encode it, then H.264, then JPEG. **H.265** and **H.264** request a specific WebRTC codec and fall back to JPEG if it cannot start. **JPEG** uses WebSocket without WebRTC. Changes apply to the connected browser and the choice is saved for the current Windows user.
+Use the Windows app's **Video** menu to choose the transport. **Auto** prefers H.264, then H.265 if H.264 is unavailable, then JPEG. Choose **H.265** explicitly when you want higher compression and the PC can encode it reliably. **H.265** and **H.264** request a specific WebRTC codec and fall back to JPEG if it cannot start. **JPEG** uses WebSocket without WebRTC. Changes apply to the connected browser and the choice is saved for the current Windows user.
 
 ## Android source
 
@@ -77,7 +78,7 @@ Open the **Android** tab and click **Refresh**. Devices already connected throug
 
 For a wireless connection, expand **Connect over Wi-Fi**. Enter the connection IP:port and click **Connect**. Android 11 or newer may first require **Pair** with the pairing IP:port and six-digit code shown in the device's Wireless debugging screen. The pairing port and connection port can differ. [Android's ADB guide](https://developer.android.com/tools/adb) explains the setup.
 
-Android **Video** offers **Auto**, **H.265**, and **H.264**. Auto tries H.265 when the browser offers it, then H.264. The device does the encoding; App Remote forwards the compressed video to WebRTC. Android currently requires WebRTC video and does not have a JPEG fallback. Touch, drag, scroll, and keyboard input use scrcpy's device control channel.
+Android **Video** offers **Auto**, **H.265**, and **H.264**. Auto tries H.264 first, then H.265 if H.264 is unavailable. Choose H.265 explicitly when you want higher compression and the device can encode it reliably. The Android encoder has a 4 Mbps target bitrate, shown in the Windows app. Windows video uses the encoder's default bitrate without a fixed target. The device does the Android encoding; App Remote forwards the compressed video to WebRTC. Android currently requires WebRTC video and does not have a JPEG fallback. Touch, drag, scroll, and keyboard input use scrcpy's device control channel.
 
 The server uses TCP port `8765` by default. To change it, enter a number from 1 to 65535 in the Windows app's **Port** field and select **Apply**. The server restarts on the new port, the URL and QR code update, and connected browsers must open the new URL. The port is saved for the current Windows user. WebRTC video also uses UDP. On iPhone, use Safari's **Add to Home Screen** action to launch from an icon. If an existing shortcut keeps an old icon, remove it and add it again.
 
@@ -127,6 +128,10 @@ dotnet run --project tests/CaptureSmoke/CaptureSmoke.csproj
 
 It checks web and icon delivery, key authentication, foreground and background input, JPEG/WebSocket frames, and H.264/H.265 WebRTC frames. Check phone rendering and interaction on a device separately.
 
+To check browser handoff without opening a test window, run `dotnet run --project tests/CaptureSmoke/CaptureSmoke.csproj -- --handoff-only` with TCP port `18766` free.
+
+To check that window capture pauses without browsers and resumes on connection, run `dotnet run --project tests/CaptureSmoke/CaptureSmoke.csproj -- --idle-only` with TCP port `18767` free.
+
 With an ADB-connected Android device, run the Android integration check:
 
 ```powershell
@@ -134,3 +139,5 @@ dotnet run --project tests/AndroidSmoke/AndroidSmoke.csproj -- C:\path\to\adb.ex
 ```
 
 It checks H.264 and H.265 video from the device through the App Remote WebRTC server and sends one Tab key event to verify the control channel.
+
+To check that Android encoding starts on connection and stops on disconnect using H.264 only, add `--idle-only` after the device serial. This check uses TCP port `18768`.

@@ -7,6 +7,11 @@ using SIPSorceryMedia.Abstractions;
 using SIPSorceryMedia.FFmpeg;
 using Forms = System.Windows.Forms;
 
+if (args.Contains("--handoff-only", StringComparer.OrdinalIgnoreCase))
+    return await RunHandoffSmokeAsync();
+if (args.Contains("--idle-only", StringComparer.OrdinalIgnoreCase))
+    return await RunIdleSmokeAsync();
+
 using var fixture = new AnimatedWindow();
 var hwnd = await fixture.StartAsync();
 var pid = (uint)Environment.ProcessId;
@@ -388,13 +393,13 @@ try
     using var autoResponse = await http.SendAsync(autoOffer);
     autoResponse.EnsureSuccessStatusCode();
     var autoAnswer = await autoResponse.Content.ReadAsStringAsync();
-    if (!autoAnswer.Contains("H265/90000", StringComparison.OrdinalIgnoreCase))
-        throw new Exception("Auto did not prefer H.265 when both codecs were offered");
+    if (!autoAnswer.Contains("H264/90000", StringComparison.OrdinalIgnoreCase))
+        throw new Exception("Auto did not prefer H.264 when both codecs were offered");
     if (autoReceiver.setRemoteDescription(new RTCSessionDescriptionInit { sdp = autoAnswer, type = RTCSdpType.answer }) != SetDescriptionResultEnum.OK)
         throw new Exception("Auto WebRTC answer rejected");
     for (var i = 0; i < 150 && Volatile.Read(ref autoFrames) == 0; i++) await Task.Delay(50);
-    if (autoFrames == 0) throw new Exception("Auto H.265 stream delivered no frames");
-    Console.WriteLine("OK: Auto prefers H.265 when offered");
+    if (autoFrames == 0) throw new Exception("Auto H.264 stream delivered no frames");
+    Console.WriteLine("OK: Auto prefers H.264 when offered");
     autoReceiver.Close("done");
     second.Abort();
     socket.Abort();
@@ -404,6 +409,138 @@ catch (Exception ex)
 {
     Console.WriteLine(ex);
     return 1;
+}
+
+static async Task<int> RunHandoffSmokeAsync()
+{
+    await using var server = new RemoteServer(new RemoteSession(), 18766);
+    try
+    {
+        await server.StartAsync();
+        var localUrl = new UriBuilder(server.Url!) { Host = "127.0.0.1" }.Uri;
+        var origin = localUrl.GetLeftPart(UriPartial.Authority);
+        var wsUri = new UriBuilder(localUrl) { Scheme = "ws", Path = "/ws" }.Uri;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        async Task<ClientWebSocket> ConnectAsync(bool resumeOnly)
+        {
+            var client = new ClientWebSocket();
+            client.Options.SetRequestHeader("Origin", origin);
+            var target = resumeOnly ? new Uri(wsUri + "&resume=1") : wsUri;
+            await client.ConnectAsync(target, timeout.Token);
+            return client;
+        }
+        async Task<string> ReadReadyAsync(ClientWebSocket client)
+        {
+            var buffer = new byte[4096];
+            var message = await client.ReceiveAsync(buffer, timeout.Token);
+            if (message.MessageType != WebSocketMessageType.Text)
+                throw new Exception("Client-ready message missing");
+            using var json = System.Text.Json.JsonDocument.Parse(buffer.AsMemory(0, message.Count));
+            if (json.RootElement.GetProperty("type").GetString() != "ready")
+                throw new Exception("Client-ready message missing");
+            return json.RootElement.GetProperty("clientId").GetString()!;
+        }
+
+        using var first = await ConnectAsync(false);
+        var firstId = await ReadReadyAsync(first);
+        using var second = await ConnectAsync(false);
+        var secondId = await ReadReadyAsync(second);
+        if (firstId == secondId) throw new Exception("New client did not get a unique ID");
+        var buffer = new byte[4096];
+        while (true)
+        {
+            var message = await first.ReceiveAsync(buffer, timeout.Token);
+            if (message.MessageType == WebSocketMessageType.Close)
+                throw new Exception("Previous client closed without replacement notice");
+            if (message.MessageType == WebSocketMessageType.Text &&
+                System.Text.Encoding.UTF8.GetString(buffer, 0, message.Count).Contains("\"replaced\"", StringComparison.Ordinal)) break;
+        }
+        first.Abort();
+
+        using var busyRetry = await ConnectAsync(true);
+        var busyResponse = await busyRetry.ReceiveAsync(buffer, timeout.Token);
+        if (busyResponse.MessageType != WebSocketMessageType.Close || busyResponse.CloseStatus != (WebSocketCloseStatus)4002)
+            throw new Exception("Idle-only retry took over an active client");
+
+        var disconnected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        server.ClientChanged += connected => { if (!connected) disconnected.TrySetResult(); };
+        await second.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", timeout.Token);
+        await disconnected.Task.WaitAsync(timeout.Token);
+        using var restored = await ConnectAsync(true);
+        var restoredId = await ReadReadyAsync(restored);
+        if (restoredId == firstId || restoredId == secondId)
+            throw new Exception("Restored client did not get a new ID");
+        Console.WriteLine("OK: normal connection takes over, idle-only retry waits, then reconnects");
+        restored.Abort();
+        return 0;
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine(ex);
+        return 1;
+    }
+}
+
+static async Task<int> RunIdleSmokeAsync()
+{
+    using var fixture = new AnimatedWindow();
+    var hwnd = await fixture.StartAsync();
+    using var session = new RemoteSession();
+    var rawFrames = 0;
+    session.RawFrameReady += (_, _, _) => Interlocked.Increment(ref rawFrames);
+    session.CaptureFaulted += message => Console.WriteLine("CAPTURE ERROR: " + message);
+    await using var server = new RemoteServer(session, 18767);
+    try
+    {
+        session.Select(new WindowEntry(hwnd, "Idle smoke", (uint)Environment.ProcessId));
+        await server.StartAsync();
+        await Task.Delay(350);
+        if (rawFrames != 0 || session.LatestFrame is not null)
+            throw new Exception("Window capture ran without a browser");
+
+        var localUrl = new UriBuilder(server.Url!) { Host = "127.0.0.1" }.Uri;
+        var wsUri = new UriBuilder(localUrl) { Scheme = "ws", Path = "/ws" }.Uri;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        async Task<ClientWebSocket> ConnectAsync()
+        {
+            var client = new ClientWebSocket();
+            client.Options.SetRequestHeader("Origin", localUrl.GetLeftPart(UriPartial.Authority));
+            await client.ConnectAsync(wsUri, timeout.Token);
+            var buffer = new byte[4096];
+            var ready = await client.ReceiveAsync(buffer, timeout.Token);
+            if (ready.MessageType != WebSocketMessageType.Text ||
+                !System.Text.Encoding.UTF8.GetString(buffer, 0, ready.Count).Contains("\"ready\"", StringComparison.Ordinal))
+                throw new Exception("Browser was not admitted");
+            return client;
+        }
+
+        using (var first = await ConnectAsync())
+        {
+            for (var i = 0; i < 100 && (Volatile.Read(ref rawFrames) == 0 || session.LatestFrame is null); i++) await Task.Delay(50);
+            if (rawFrames == 0 || session.LatestFrame is null)
+                throw new Exception($"Window capture did not start for the browser (raw={rawFrames}, jpeg={session.LatestFrame is not null}, selected={session.Selected is not null})");
+            var disconnected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            server.ClientChanged += connected => { if (!connected) disconnected.TrySetResult(); };
+            await first.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", timeout.Token);
+            await disconnected.Task.WaitAsync(timeout.Token);
+        }
+        var stoppedAt = Volatile.Read(ref rawFrames);
+        await Task.Delay(350);
+        if (rawFrames != stoppedAt || session.LatestFrame is not null || session.Selected is null)
+            throw new Exception("Window capture did not pause while keeping the selected window");
+        using var resumed = await ConnectAsync();
+        for (var i = 0; i < 100 && (Volatile.Read(ref rawFrames) == stoppedAt || session.LatestFrame is null); i++) await Task.Delay(50);
+        if (rawFrames == stoppedAt || session.LatestFrame is null)
+            throw new Exception("Window capture did not resume");
+        resumed.Abort();
+        Console.WriteLine("OK: window capture pauses without browsers and resumes on connection");
+        return 0;
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine(ex);
+        return 1;
+    }
 }
 
 internal sealed class AnimatedWindow : IDisposable
