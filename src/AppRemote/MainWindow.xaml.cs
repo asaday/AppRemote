@@ -8,6 +8,8 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media.Imaging;
 using AppRemote.Windows;
+using AppRemote.Android;
+using System.Net;
 using QRCoder;
 using Forms = System.Windows.Forms;
 
@@ -17,6 +19,8 @@ public partial class MainWindow : Window
 {
     private readonly RemoteSession _session = new();
     private readonly AppSettings _settings = AppSettings.Load();
+    private AndroidSource? _androidSource;
+    private bool _startingAndroid;
     private RemoteServer _server;
     private bool _initializingSettings = true;
     private bool _clientConnected;
@@ -37,6 +41,9 @@ public partial class MainWindow : Window
         System.Windows.Application.Current.SessionEnding += (_, _) => _exitRequested = true;
         RestoreLastWindowCheck.IsChecked = _settings.RestoreLastWindow;
         VideoModePicker.SelectedIndex = (int)_settings.VideoMode;
+        AndroidVideoModePicker.SelectedIndex = (int)_settings.AndroidVideoMode;
+        AndroidAddressTextBox.Text = _settings.AndroidAddress ?? "";
+        AdbPathTextBox.Text = AdbClient.Find(_settings.AdbPath) ?? "";
         TouchModePicker.SelectedIndex = (int)_settings.TouchMode;
         BackgroundInputCheck.IsChecked = _settings.BackgroundInput;
         PortTextBox.Text = _settings.Port.ToString();
@@ -74,9 +81,10 @@ public partial class MainWindow : Window
         AttachServer(_server);
         _session.Changed += () => Dispatcher.BeginInvoke(() =>
         {
-            SelectedText.Text = _session.Selected is { } selected ? $"Selected window: {selected.Title}" : "No window selected";
-            StopButton.IsEnabled = _session.Selected is not null;
-            _trayStopItem.Enabled = _session.Selected is not null;
+            if (_androidSource is null)
+                SelectedText.Text = _session.Selected is { } selected ? $"Selected window: {selected.Title}" : "No source selected";
+            StopButton.IsEnabled = _session.Selected is not null || _androidSource is not null;
+            _trayStopItem.Enabled = StopButton.IsEnabled;
             UpdateStatus();
         });
         _session.CaptureFaulted += message => Dispatcher.BeginInvoke(() => StatusText.Text = "Capture error: " + message);
@@ -105,17 +113,44 @@ public partial class MainWindow : Window
             _videoError = message;
             UpdateStatus();
         });
+        server.AndroidSourceChanged += source => Dispatcher.BeginInvoke(() =>
+        {
+            if (!ReferenceEquals(_server, server) || !ReferenceEquals(server.CurrentAndroidSource, source)) return;
+            _androidSource = source;
+            AndroidStatusText.Text = $"Ready: {source.Serial} ({(source.Codec == VideoPreference.H265 ? "H.265" : "H.264")})";
+            UpdateStatus();
+        });
     }
 
     private async void Window_Loaded(object sender, RoutedEventArgs e)
     {
         RefreshWindows();
+        await RefreshDevicesAsync();
         try
         {
             await _server.StartAsync();
             RefreshConnectionOptions();
             UpdateStatus();
-            TryRestoreLastWindow();
+            if (_settings.LastSource == SourceKind.Android && _settings.RestoreLastWindow)
+            {
+                var remembered = DeviceList.Items.Cast<AndroidDevice>()
+                    .FirstOrDefault(device => device.Serial == _settings.LastAndroidSerial && device.State == "device");
+                if (remembered is null && _settings.LastAndroidSerial is { } serial &&
+                    serial == _settings.AndroidAddress && ValidAddress(serial) &&
+                    AdbClient.Find(_settings.AdbPath) is { } adb)
+                {
+                    try
+                    {
+                        await AdbClient.RunAsync(adb, null, "connect", serial);
+                        await RefreshDevicesAsync();
+                        remembered = DeviceList.Items.Cast<AndroidDevice>()
+                            .FirstOrDefault(device => device.Serial == serial && device.State == "device");
+                    }
+                    catch (Exception ex) { AndroidStatusText.Text = "Could not reconnect Android: " + ex.Message; }
+                }
+                if (remembered is not null) { DeviceList.SelectedItem = remembered; await SelectAndroidAsync(remembered.Serial, true); }
+            }
+            else TryRestoreLastWindow();
         }
         catch (Exception ex)
         {
@@ -189,12 +224,15 @@ public partial class MainWindow : Window
     private void Stop_Click(object sender, RoutedEventArgs e)
         => StopSharing();
 
-    private void StopSharing()
+    private async void StopSharing()
     {
+        var android = _server.SetAndroidSource(null);
+        _androidSource = null;
         _session.Stop();
+        if (android is not null) await android.DisposeAsync();
         _settings.Forget();
         SaveSettings();
-        SelectedText.Text = "No window selected";
+        SelectedText.Text = "No source selected";
         StopButton.IsEnabled = false;
         _trayStopItem.Enabled = false;
         UpdateStatus();
@@ -203,7 +241,9 @@ public partial class MainWindow : Window
     {
         if (_initializingSettings) return;
         _settings.RestoreLastWindow = RestoreLastWindowCheck.IsChecked == true;
-        if (_settings.RestoreLastWindow && _session.Selected is { } selected)
+        if (_settings.RestoreLastWindow && _androidSource is { } android)
+            _settings.RememberAndroid(android.Serial);
+        else if (_settings.RestoreLastWindow && _session.Selected is { } selected)
         {
             if (!_settings.Remember(selected)) _settings.Forget();
         }
@@ -216,9 +256,16 @@ public partial class MainWindow : Window
         _settings.VideoMode = (VideoPreference)VideoModePicker.SelectedIndex;
         _videoError = null;
         _activeVideo = null;
-        _server.SetVideoPreference(_settings.VideoMode);
+        if (_androidSource is null) _server.SetVideoPreference(_settings.VideoMode);
         SaveSettings();
         UpdateStatus();
+    }
+    private async void AndroidVideoMode_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_initializingSettings || AndroidVideoModePicker.SelectedIndex < 0) return;
+        _settings.AndroidVideoMode = (VideoPreference)AndroidVideoModePicker.SelectedIndex;
+        SaveSettings();
+        if (_androidSource is { } source) await SelectAndroidAsync(source.Serial, false);
     }
     private void TouchMode_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
@@ -248,7 +295,8 @@ public partial class MainWindow : Window
         if (port == _settings.Port) { UpdateStatus(); return; }
         ApplyPortButton.IsEnabled = false;
         var next = new RemoteServer(_session, port);
-        next.SetVideoPreference(_settings.VideoMode);
+        next.SetAndroidSource(_androidSource, AndroidFactory());
+        next.SetVideoPreference(_androidSource is null ? _settings.VideoMode : _settings.AndroidVideoMode);
         next.SetTouchMode(_settings.TouchMode);
         next.SetBackgroundInput(_settings.BackgroundInput);
         try
@@ -285,6 +333,11 @@ public partial class MainWindow : Window
         try
         {
             _session.Select(entry);
+            var android = _server.SetAndroidSource(null);
+            _androidSource = null;
+            _server.SetVideoPreference(_settings.VideoMode);
+            _server.SetTouchMode(_settings.TouchMode);
+            if (android is not null) _ = android.DisposeAsync();
             if (_settings.RestoreLastWindow)
             {
                 if (!_settings.Remember(entry)) _settings.Forget();
@@ -304,7 +357,7 @@ public partial class MainWindow : Window
 
     private void TryRestoreLastWindow()
     {
-        if (!_settings.RestoreLastWindow) return;
+        if (!_settings.RestoreLastWindow || _settings.LastSource != SourceKind.Windows) return;
         var match = _settings.FindLastWindow(WindowList.Items.Cast<WindowEntry>());
         if (match is null) return;
         try
@@ -322,6 +375,135 @@ public partial class MainWindow : Window
         }
     }
 
+    private async void RefreshDevices_Click(object sender, RoutedEventArgs e) => await RefreshDevicesAsync();
+
+    private async Task RefreshDevicesAsync()
+    {
+        var adb = AdbClient.Find(_settings.AdbPath);
+        AdbPathTextBox.Text = adb ?? "";
+        if (adb is null)
+        {
+            DeviceList.ItemsSource = null;
+            AndroidStatusText.Text = "ADB was not found. Select adb.exe from Android SDK Platform Tools.";
+            return;
+        }
+        try
+        {
+            var selected = (DeviceList.SelectedItem as AndroidDevice)?.Serial;
+            DeviceList.ItemsSource = await AdbClient.DevicesAsync(adb);
+            if (selected is not null)
+                DeviceList.SelectedItem = DeviceList.Items.Cast<AndroidDevice>()
+                    .FirstOrDefault(device => device.Serial == selected);
+            AndroidStatusText.Text = DeviceList.Items.Count == 0
+                ? "No devices found. Enable debugging and authorize this PC."
+                : $"{DeviceList.Items.Count} device(s) found.";
+        }
+        catch (Exception ex) { AndroidStatusText.Text = "ADB failed: " + ex.Message; }
+    }
+
+    private async void SelectDevice_Click(object sender, RoutedEventArgs e)
+    {
+        if (DeviceList.SelectedItem is not AndroidDevice device) return;
+        if (device.State != "device") { AndroidStatusText.Text = $"Device is {device.State}. Authorize this PC first."; return; }
+        await SelectAndroidAsync(device.Serial, false);
+    }
+
+    private async Task SelectAndroidAsync(string serial, bool restoring)
+    {
+        if (_startingAndroid) return;
+        var adb = AdbClient.Find(_settings.AdbPath);
+        if (adb is null) { AndroidStatusText.Text = "Select adb.exe first."; return; }
+        _startingAndroid = true;
+        SelectDeviceButton.IsEnabled = false;
+        AndroidStatusText.Text = "Starting Android video...";
+        try
+        {
+            var serverFile = await ScrcpyServerFile.GetAsync();
+            var mode = _settings.AndroidVideoMode == VideoPreference.H265
+                ? VideoPreference.H265 : VideoPreference.H264;
+            AndroidSource source;
+            try { source = await AndroidSource.StartAsync(adb, serial, serverFile, mode); }
+            catch when (_settings.AndroidVideoMode == VideoPreference.Auto && mode == VideoPreference.H265)
+            { source = await AndroidSource.StartAsync(adb, serial, serverFile, VideoPreference.H264); }
+            if (_closing) { await source.DisposeAsync(); return; }
+            _androidSource = source;
+            _session.Stop();
+            var previous = _server.SetAndroidSource(source, AndroidFactory());
+            _server.SetVideoPreference(_settings.AndroidVideoMode);
+            _server.SetTouchMode(TouchInputMode.Direct);
+            if (previous is not null) await previous.DisposeAsync();
+            if (_settings.RestoreLastWindow && !restoring)
+            { _settings.RememberAndroid(serial); SaveSettings(); }
+            SourceTabs.SelectedIndex = 1;
+            SelectedText.Text = "Selected Android: " + serial;
+            StopButton.IsEnabled = true;
+            _trayStopItem.Enabled = true;
+            AndroidStatusText.Text = $"Ready: {serial} ({(source.Codec == VideoPreference.H265 ? "H.265" : "H.264")})";
+            UpdateStatus();
+        }
+        catch (Exception ex) { AndroidStatusText.Text = "Could not start Android: " + ex.Message; }
+        finally { _startingAndroid = false; SelectDeviceButton.IsEnabled = true; }
+    }
+
+    private Func<VideoPreference, Task<AndroidSource>>? AndroidFactory()
+    {
+        if (_androidSource is null) return null;
+        var serial = _androidSource.Serial;
+        var adb = AdbClient.Find(_settings.AdbPath);
+        if (adb is null) return null;
+        return async codec => await AndroidSource.StartAsync(adb, serial,
+            await ScrcpyServerFile.GetAsync(), codec);
+    }
+
+    private static bool ValidAddress(string value)
+        => IPEndPoint.TryParse(value, out var endpoint) && endpoint.Port is > 0 and <= 65535 &&
+           !IPAddress.IsLoopback(endpoint.Address);
+
+    private async void ConnectDevice_Click(object sender, RoutedEventArgs e)
+    {
+        var address = AndroidAddressTextBox.Text.Trim();
+        if (!ValidAddress(address)) { AndroidStatusText.Text = "Enter a valid IP:port."; return; }
+        var adb = AdbClient.Find(_settings.AdbPath);
+        if (adb is null) { AndroidStatusText.Text = "Select adb.exe first."; return; }
+        try
+        {
+            AndroidStatusText.Text = "Connecting...";
+            AndroidStatusText.Text = await AdbClient.RunAsync(adb, null, "connect", address);
+            _settings.AndroidAddress = address;
+            SaveSettings();
+            await RefreshDevicesAsync();
+        }
+        catch (Exception ex) { AndroidStatusText.Text = "Connection failed: " + ex.Message; }
+    }
+
+    private async void PairDevice_Click(object sender, RoutedEventArgs e)
+    {
+        var address = PairAddressTextBox.Text.Trim();
+        var code = PairCodeTextBox.Text.Trim();
+        if (!ValidAddress(address) || code.Length != 6 || !code.All(char.IsAsciiDigit))
+        { AndroidStatusText.Text = "Enter the pairing IP:port and 6-digit code shown on Android."; return; }
+        var adb = AdbClient.Find(_settings.AdbPath);
+        if (adb is null) { AndroidStatusText.Text = "Select adb.exe first."; return; }
+        try
+        {
+            AndroidStatusText.Text = "Pairing...";
+            AndroidStatusText.Text = await AdbClient.RunAsync(adb, null, "pair", address, code);
+            PairCodeTextBox.Clear();
+            await RefreshDevicesAsync();
+        }
+        catch (Exception ex) { AndroidStatusText.Text = "Pairing failed: " + ex.Message; }
+    }
+
+    private async void BrowseAdb_Click(object sender, RoutedEventArgs e)
+    {
+        var picker = new Microsoft.Win32.OpenFileDialog { Filter = "ADB executable (adb.exe)|adb.exe",
+            Title = "Select adb.exe from Android SDK Platform Tools" };
+        if (picker.ShowDialog(this) != true) return;
+        _settings.AdbPath = picker.FileName;
+        SaveSettings();
+        await RefreshDevicesAsync();
+    }
+
     private void SaveSettings()
     {
         try { _settings.Save(); }
@@ -333,8 +515,17 @@ public partial class MainWindow : Window
 
     private void UpdateStatus()
     {
+        if (_androidSource is { } android)
+        {
+            var text = !_clientConnected ? "Android selected - waiting for client" :
+                _activeVideo is VideoPreference.H264 or VideoPreference.H265
+                    ? $"Streaming Android ({(_activeVideo == VideoPreference.H265 ? "H.265" : "H.264")} / WebRTC)"
+                    : "Android selected - connecting video";
+            StatusText.Text = _videoError is null ? text : text + " — " + _videoError;
+            return;
+        }
         var status = _session.Selected is null
-            ? _clientConnected ? "Client connected - choose a window" : "Waiting for client"
+            ? _clientConnected ? "Client connected - choose a source" : "Waiting for client"
             : !_clientConnected ? "Window selected - waiting for client"
             : _activeVideo is VideoPreference.H264 or VideoPreference.H265
                 ? $"Streaming window ({(_activeVideo == VideoPreference.H265 ? "H.265" : "H.264")} / WebRTC)"
@@ -412,5 +603,6 @@ public partial class MainWindow : Window
         _trayImage?.Dispose();
         _session.Dispose();
         await _server.DisposeAsync();
+        if (_server.CurrentAndroidSource is { } android) await android.DisposeAsync();
     }
 }

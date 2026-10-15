@@ -7,7 +7,7 @@ using SIPSorceryMedia.FFmpeg;
 
 namespace AppRemote;
 
-internal sealed class VideoPeer : IDisposable
+internal sealed class VideoPeer : IRemoteVideoPeer
 {
     private readonly RemoteSession _session;
     private readonly RTCPeerConnection _peer;

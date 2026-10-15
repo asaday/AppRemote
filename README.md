@@ -1,12 +1,16 @@
 # App Remote
 
-App Remote lets you view and control one selected Windows window from a phone or PC browser on the same local network or over a Tailscale tailnet. Select the window on your PC, then open the QR code in Safari on iPhone or Chrome on Android, or open the URL in a PC browser. No App Remote client app is required.
+App Remote lets you view and control one selected Windows window or Android device from a phone or PC browser on the same local network or over a Tailscale tailnet. Select the source in the Windows app, then open the QR code in Safari on iPhone, Chrome on Android, or a PC browser. No browser-side app is required.
 
-Video uses H.265 or H.264 over WebRTC when available, with JPEG over WebSocket as a fallback. The Windows app shows which video transport is active.
+Windows video uses H.265 or H.264 over WebRTC when available, with JPEG over WebSocket as a fallback. Android video is encoded on the device and sent over WebRTC without PC re-encoding. The Windows app shows which video transport is active.
 
-![App Remote Windows app showing window selection and phone connection panel](docs/images/app-remote-windows.png)
+## Screenshots
 
-*Windows app preview. Window names and connection details are illustrative.*
+| Windows source settings | Android source settings |
+| --- | --- |
+| ![App Remote Windows tab](docs/images/app-remote-windows.png) | ![App Remote Android tab](docs/images/app-remote-android.png) |
+
+The QR code, connection address, and ADB path shown in these screenshots are examples.
 
 ## Download
 
@@ -14,26 +18,28 @@ Download the Windows x64 ZIP from the [latest release](https://github.com/asaday
 
 ## Features
 
-- Select any eligible Windows window to stream
+- Select an eligible Windows window or an ADB-connected Android device to stream
 - Tap, drag, scroll, and type from a phone or PC browser
 - Choose direct touch or relative cursor control in the Windows app
 - Optionally send input to the selected window without bringing it to the foreground (experimental)
 - Connect with a QR code or the **Copy URL** button
 - Add a shortcut with an icon to the iPhone Home Screen
 - One active browser connection at a time; a newer connection takes over
-- Choose Auto, H.265, H.264, or JPEG video on the Windows app
+- Choose Auto, H.265, H.264, or JPEG for Windows video; Auto, H.265, or H.264 for Android video
 
 ## Requirements
 
 - Windows 10 version 2004 or later, or Windows 11 (x64)
 - A phone or PC browser on the same local network, or devices connected to the same Tailscale tailnet (Safari on iPhone or Chrome on Android)
-- [FFmpeg (Shared) 8.1](https://github.com/GyanD/codexffmpeg/releases/tag/8.1) for H.265/H.264 video
+- [FFmpeg (Shared) 8.1](https://github.com/GyanD/codexffmpeg/releases/tag/8.1) for Windows H.265/H.264 video
 
 Without FFmpeg, the app can still stream JPEG frames. On Windows, you can install the shared FFmpeg build with:
 
 ```powershell
 winget install --id Gyan.FFmpeg.Shared --version 8.1 --exact
 ```
+
+To share an Android device, install [Android SDK Platform Tools](https://developer.android.com/tools/releases/platform-tools) on the Windows PC and enable USB debugging or wireless debugging on the device. App Remote finds `adb.exe` in Platform Tools or on `PATH`; you can also select it with **Browse** in the Android tab. The app downloads the scrcpy device server from its official release on first use and verifies its SHA-256 checksum. This first start needs internet access. You do not need the scrcpy desktop app or an Android companion app.
 
 ## Build and run
 
@@ -55,15 +61,23 @@ Exit App Remote from its system tray menu before rebuilding it. To move the app 
 
 1. Start `dist/AppRemote/AppRemote.exe`.
 2. If Windows Firewall prompts you, allow access on **private networks**.
-3. Select a window and click **Control this window**.
+3. Select a source in the **Windows** or **Android** tab and click **Control this window** or **Control this device**.
 4. Open the QR code on a phone connected to the same network. You can also use **Copy URL** and open the address manually.
-5. Click **Stop** to end capture of the selected window. The connection page stays available so you can select another window.
+5. Click **Stop sharing** to end the selected source. The connection page stays available so you can select another source.
 
 Minimizing or closing the Windows window hides it in the system tray while the server and selected window remain active. Double-click the tray icon to reopen the window. The tray menu has **Open App Remote**, **Stop sharing**, **Keep streaming after RDP**, and **Exit**; select **Exit** to shut down the server.
 
-Enable **Restore last window on startup** to resume capture automatically when the previously selected app has one identifiable, visible window at launch. **Stop** clears the remembered window. The setting is stored for the current Windows user.
+Enable **Restore last source on startup** to resume the previous Windows window or Android device when it is available at launch. **Stop sharing** clears the remembered source. The setting is stored for the current Windows user.
 
 Use the Windows app's **Video** menu to choose the transport. **Auto** prefers H.265 when the browser offers it and the PC can encode it, then H.264, then JPEG. **H.265** and **H.264** request a specific WebRTC codec and fall back to JPEG if it cannot start. **JPEG** uses WebSocket without WebRTC. Changes apply to the connected browser and the choice is saved for the current Windows user.
+
+## Android source
+
+Open the **Android** tab and click **Refresh**. Devices already connected through ADB, including USB and paired wireless devices, appear in the list. Select a device with state **device**, then click **Control this device**. Other states such as **unauthorized** require approval on the Android device.
+
+For a wireless connection, expand **Connect over Wi-Fi**. Enter the connection IP:port and click **Connect**. Android 11 or newer may first require **Pair** with the pairing IP:port and six-digit code shown in the device's Wireless debugging screen. The pairing port and connection port can differ. [Android's ADB guide](https://developer.android.com/tools/adb) explains the setup.
+
+Android **Video** offers **Auto**, **H.265**, and **H.264**. Auto tries H.265 when the browser offers it, then H.264. The device does the encoding; App Remote forwards the compressed video to WebRTC. Android currently requires WebRTC video and does not have a JPEG fallback. Touch, drag, scroll, and keyboard input use scrcpy's device control channel.
 
 The server uses TCP port `8765` by default. To change it, enter a number from 1 to 65535 in the Windows app's **Port** field and select **Apply**. The server restarts on the new port, the URL and QR code update, and connected browsers must open the new URL. The port is saved for the current Windows user. WebRTC video also uses UDP. On iPhone, use Safari's **Add to Home Screen** action to launch from an icon. If an existing shortcut keeps an old icon, remove it and add it again.
 
@@ -77,7 +91,7 @@ Tailscale assigns each device a stable IP address. You can also find the PC's ad
 
 ## Phone controls
 
-Use the Windows app's **Phone input** menu to choose **Direct touch** or **Cursor (trackpad)**. The choice is saved on the PC and updates the connected phone. **Direct touch** taps the point shown on screen and supports dragging. **Cursor** moves the Windows pointer relative to your finger; a tap clicks at the pointer's current position. Use Direct touch to drag an item.
+For a Windows source, use the Windows tab's **Phone input** menu to choose **Direct touch** or **Cursor (trackpad)**. The choice is saved on the PC and updates the connected phone. **Direct touch** taps the point shown on screen and supports dragging. **Cursor** moves the Windows pointer relative to your finger; a tap clicks at the pointer's current position. Use Direct touch to drag an item. Android uses direct touch.
 
 Enable **Send input without activating window** in the Windows app to try background control. This sends mouse and keyboard messages to the selected window instead of moving the PC's physical cursor or activating the window. In Cursor mode, a small marker on the phone shows the virtual pointer. The choice is saved on the PC and updates the connected phone. Turn the checkbox off to return to normal input.
 
@@ -112,3 +126,11 @@ dotnet run --project tests/CaptureSmoke/CaptureSmoke.csproj
 ```
 
 It checks web and icon delivery, key authentication, foreground and background input, JPEG/WebSocket frames, and H.264/H.265 WebRTC frames. Check phone rendering and interaction on a device separately.
+
+With an ADB-connected Android device, run the Android integration check:
+
+```powershell
+dotnet run --project tests/AndroidSmoke/AndroidSmoke.csproj -- C:\path\to\adb.exe DEVICE_SERIAL
+```
+
+It checks H.264 and H.265 video from the device through the App Remote WebRTC server and sends one Tab key event to verify the control channel.

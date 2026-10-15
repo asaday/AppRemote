@@ -8,10 +8,17 @@ namespace AppRemote;
 
 internal enum VideoPreference { Auto, H265, H264, Jpeg }
 internal enum TouchInputMode { Direct, Cursor }
+internal enum SourceKind { Windows, Android }
 
 internal sealed class AppSettings
 {
     public bool RestoreLastWindow { get; set; }
+    public SourceKind LastSource { get; set; }
+    public string? LastAndroidSerial { get; set; }
+    public string? AdbPath { get; set; }
+    public string? AndroidAddress { get; set; }
+    [JsonConverter(typeof(JsonStringEnumConverter<VideoPreference>))]
+    public VideoPreference AndroidVideoMode { get; set; } = VideoPreference.Auto;
     public int Port { get; set; } = 8765;
     [JsonConverter(typeof(JsonStringEnumConverter<VideoPreference>))]
     public VideoPreference VideoMode { get; set; } = VideoPreference.Auto;
@@ -33,6 +40,9 @@ internal sealed class AppSettings
                 ? JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(SettingsPath)) ?? new AppSettings()
                 : new AppSettings();
             if (!Enum.IsDefined(settings.VideoMode)) settings.VideoMode = VideoPreference.Auto;
+            if (!Enum.IsDefined(settings.AndroidVideoMode) || settings.AndroidVideoMode == VideoPreference.Jpeg)
+                settings.AndroidVideoMode = VideoPreference.Auto;
+            if (!Enum.IsDefined(settings.LastSource)) settings.LastSource = SourceKind.Windows;
             if (!Enum.IsDefined(settings.TouchMode)) settings.TouchMode = TouchInputMode.Direct;
             if (settings.Port is < 1 or > 65535) settings.Port = 8765;
             return settings;
@@ -54,6 +64,7 @@ internal sealed class AppSettings
 
     public bool Remember(WindowEntry entry)
     {
+        LastSource = SourceKind.Windows;
         var executablePath = GetExecutablePath(entry);
         if (executablePath is null) return false;
         LastExecutablePath = executablePath;
@@ -61,10 +72,17 @@ internal sealed class AppSettings
         return true;
     }
 
+    public void RememberAndroid(string serial)
+    {
+        LastSource = SourceKind.Android;
+        LastAndroidSerial = serial;
+    }
+
     public void Forget()
     {
         LastExecutablePath = null;
         LastWindowTitle = null;
+        LastAndroidSerial = null;
     }
 
     public WindowEntry? FindLastWindow(IEnumerable<WindowEntry> windows)

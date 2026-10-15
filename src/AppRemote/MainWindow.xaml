@@ -1,7 +1,7 @@
 <Window x:Class="AppRemote.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="App Remote" Icon="Assets/app.ico" Height="830" Width="900" MinHeight="680" MinWidth="630"
+        Title="App Remote" Icon="Assets/app.ico" Height="860" Width="920" MinHeight="700" MinWidth="680"
         Background="#10151D" Foreground="#F2F5F8" FontFamily="Segoe UI"
         Loaded="Window_Loaded" Closing="Window_Closing" Closed="Window_Closed"
         StateChanged="Window_StateChanged">
@@ -13,6 +13,55 @@
             <Setter Property="Foreground" Value="White" />
             <Setter Property="BorderThickness" Value="0" />
             <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style TargetType="TextBox">
+            <Setter Property="MinHeight" Value="30" />
+            <Setter Property="Padding" Value="7,3" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="Background" Value="#1A2330" />
+            <Setter Property="Foreground" Value="#F2F5F8" />
+            <Setter Property="BorderBrush" Value="#52647C" />
+            <Setter Property="BorderThickness" Value="1" />
+        </Style>
+        <Style TargetType="TabControl">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TabControl">
+                        <Grid KeyboardNavigation.TabNavigation="Local">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+                            <TabPanel Grid.Row="0" IsItemsHost="True" Panel.ZIndex="1" />
+                            <Border Grid.Row="1" Background="#151D28" BorderBrush="#34465C"
+                                    BorderThickness="1" CornerRadius="0,7,7,7">
+                                <ContentPresenter x:Name="PART_SelectedContentHost" ContentSource="SelectedContent" />
+                            </Border>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style TargetType="TabItem">
+            <Setter Property="Foreground" Value="#F2F5F8" />
+            <Setter Property="Background" Value="#27364A" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TabItem">
+                        <Border x:Name="TabBorder" Background="{TemplateBinding Background}"
+                                BorderBrush="#34465C" BorderThickness="1,1,1,0"
+                                CornerRadius="5,5,0,0" Padding="18,9" Margin="0,0,4,0">
+                            <ContentPresenter ContentSource="Header" HorizontalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="TabBorder" Property="Background" Value="#1768B3" />
+                                <Setter TargetName="TabBorder" Property="BorderBrush" Value="#1768B3" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
     </Window.Resources>
     <Grid Margin="26">
@@ -29,66 +78,110 @@
         <TextBlock Text="App Remote" FontSize="28" FontWeight="SemiBold" Margin="0,0,0,6" />
         <TextBlock x:Name="VersionText" Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center"
                    Foreground="#A9B8C7" FontSize="13" Margin="0,0,0,6" />
-        <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Text="Choose a window on this PC. Only that window will appear on your phone."
+        <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Text="Choose a Windows window or an Android device to share with your browser."
                    Foreground="#A9B8C7" TextWrapping="Wrap" Margin="0,0,0,22" />
         <Grid Grid.Row="2" Margin="0,0,22,0">
-            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-            <DockPanel Margin="0,0,0,10">
-                <TextBlock Text="Windows" FontSize="17" FontWeight="SemiBold" VerticalAlignment="Center" />
-                <Button Content="Refresh" DockPanel.Dock="Right" HorizontalAlignment="Right" Click="Refresh_Click" />
-            </DockPanel>
-            <ListBox x:Name="WindowList" Grid.Row="1" Background="#1A2330" Foreground="White" BorderBrush="#34465C"
-                     BorderThickness="1" FontSize="14" Padding="6" MouseDoubleClick="WindowList_DoubleClick" />
-            <StackPanel Grid.Row="2" Margin="0,12,0,0">
+            <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+            <TabControl x:Name="SourceTabs" Background="#10151D" Foreground="White">
+                <TabItem Header="Windows">
+                    <Grid Margin="8,12,8,12">
+                        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                        <DockPanel Margin="0,0,0,10">
+                            <TextBlock Text="Windows" Foreground="#F2F5F8" FontSize="17" FontWeight="SemiBold" VerticalAlignment="Center" />
+                            <Button Content="Refresh" DockPanel.Dock="Right" HorizontalAlignment="Right" Click="Refresh_Click" />
+                        </DockPanel>
+                        <ListBox x:Name="WindowList" Grid.Row="1" Background="#1A2330" Foreground="White" BorderBrush="#34465C"
+                                 BorderThickness="1" FontSize="14" Padding="6" MouseDoubleClick="WindowList_DoubleClick" />
+                        <StackPanel Grid.Row="2" Margin="0,12,0,0">
+                            <Button Content="Control this window" Background="#1768B3" HorizontalAlignment="Left" Click="Select_Click" />
+                            <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                                <TextBlock Text="Video" Foreground="#F2F5F8" VerticalAlignment="Center" Margin="0,0,10,0" />
+                                <ComboBox x:Name="VideoModePicker" Width="120" SelectionChanged="VideoMode_SelectionChanged">
+                                    <ComboBoxItem Content="Auto" /><ComboBoxItem Content="H.265" />
+                                    <ComboBoxItem Content="H.264" /><ComboBoxItem Content="JPEG" />
+                                </ComboBox>
+                            </StackPanel>
+                            <TextBlock Text="Auto prefers H.265, then H.264 or JPEG. Manual modes use JPEG if unavailable."
+                                       Foreground="#A9B8C7" FontSize="11" Margin="0,4,0,0" TextWrapping="Wrap" />
+                            <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                                <TextBlock Text="Phone input" Foreground="#F2F5F8" VerticalAlignment="Center" Margin="0,0,10,0" />
+                                <ComboBox x:Name="TouchModePicker" Width="150" SelectionChanged="TouchMode_SelectionChanged">
+                                    <ComboBoxItem Content="Direct touch" /><ComboBoxItem Content="Cursor (trackpad)" />
+                                </ComboBox>
+                            </StackPanel>
+                            <CheckBox x:Name="BackgroundInputCheck" Margin="0,10,0,0"
+                                      Checked="BackgroundInput_Changed" Unchecked="BackgroundInput_Changed"
+                                      VerticalContentAlignment="Top">
+                                <StackPanel>
+                                    <TextBlock Text="Send input without activating window" Foreground="#F2F5F8" />
+                                    <TextBlock Text="Experimental. Some apps ignore background input."
+                                               Foreground="#A9B8C7" FontSize="11" Margin="0,4,0,0" TextWrapping="Wrap" />
+                                </StackPanel>
+                            </CheckBox>
+                        </StackPanel>
+                    </Grid>
+                </TabItem>
+                <TabItem Header="Android">
+                    <Grid Margin="8,12,8,12">
+                        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                        <DockPanel Margin="0,0,0,10">
+                            <TextBlock Text="ADB devices" Foreground="#F2F5F8" FontSize="17" FontWeight="SemiBold" VerticalAlignment="Center" />
+                            <Button Content="Refresh" DockPanel.Dock="Right" HorizontalAlignment="Right" Click="RefreshDevices_Click" />
+                        </DockPanel>
+                        <ListBox x:Name="DeviceList" Grid.Row="1" Background="#1A2330" Foreground="White" BorderBrush="#34465C"
+                                 BorderThickness="1" FontSize="14" Padding="6" />
+                        <ScrollViewer Grid.Row="2" Margin="0,12,0,0" MaxHeight="290"
+                                      VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                          <StackPanel>
+                            <Button x:Name="SelectDeviceButton" Content="Control this device" Background="#1768B3"
+                                    HorizontalAlignment="Left" Click="SelectDevice_Click" />
+                            <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                                <TextBlock Text="Video" Foreground="#F2F5F8" VerticalAlignment="Center" Margin="0,0,10,0" />
+                                <ComboBox x:Name="AndroidVideoModePicker" Width="120" SelectionChanged="AndroidVideoMode_SelectionChanged">
+                                    <ComboBoxItem Content="Auto" /><ComboBoxItem Content="H.265" /><ComboBoxItem Content="H.264" />
+                                </ComboBox>
+                            </StackPanel>
+                            <TextBlock Text="Auto tries H.265, then H.264. Video is encoded on the device."
+                                       Foreground="#A9B8C7" FontSize="11" Margin="0,4,0,0" TextWrapping="Wrap" />
+                            <Expander Header="Connect over Wi-Fi" Margin="0,12,0,0" Foreground="White">
+                                <StackPanel Margin="12,8,0,0">
+                                    <TextBlock Text="Connection address (IP:port)" Foreground="#A9B8C7" />
+                                    <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                        <TextBox x:Name="AndroidAddressTextBox" Width="180" />
+                                        <Button Content="Connect" Margin="8,0,0,0" Click="ConnectDevice_Click" />
+                                    </StackPanel>
+                                    <TextBlock Text="Pairing address and code (Android 11+)" Foreground="#A9B8C7" Margin="0,10,0,0" />
+                                    <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                        <TextBox x:Name="PairAddressTextBox" Width="125" ToolTip="Pairing IP:port" />
+                                        <TextBox x:Name="PairCodeTextBox" Width="56" Margin="6,0,0,0" MaxLength="6" ToolTip="6-digit code" />
+                                        <Button Content="Pair" Margin="8,0,0,0" Click="PairDevice_Click" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </Expander>
+                            <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                                <TextBlock Text="ADB" Foreground="#F2F5F8" VerticalAlignment="Center" Margin="0,0,10,0" />
+                                <TextBox x:Name="AdbPathTextBox" Width="270" IsReadOnly="True" ToolTip="Path to adb.exe" />
+                                <Button Content="Browse" Margin="8,0,0,0" Click="BrowseAdb_Click" />
+                            </StackPanel>
+                            <TextBlock x:Name="AndroidStatusText" Text="Connect an Android device with USB or wireless debugging."
+                                       Foreground="#A9B8C7" FontSize="11" Margin="0,8,0,0" TextWrapping="Wrap" />
+                          </StackPanel>
+                        </ScrollViewer>
+                    </Grid>
+                </TabItem>
+            </TabControl>
+            <StackPanel Grid.Row="1" Margin="0,12,0,0">
                 <StackPanel Orientation="Horizontal">
-                    <Button Content="Control this window" Background="#1768B3" Click="Select_Click" />
-                    <Button x:Name="StopButton" Content="Stop" IsEnabled="False" Click="Stop_Click" />
-                </StackPanel>
-                <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
-                    <TextBlock Text="Video" VerticalAlignment="Center" Margin="0,0,10,0" />
-                    <ComboBox x:Name="VideoModePicker" Width="120" SelectionChanged="VideoMode_SelectionChanged"
-                              ToolTip="Auto prefers H.265, then H.264, then JPEG.">
-                        <ComboBoxItem Content="Auto" />
-                        <ComboBoxItem Content="H.265" />
-                        <ComboBoxItem Content="H.264" />
-                        <ComboBoxItem Content="JPEG" />
-                    </ComboBox>
-                </StackPanel>
-                <TextBlock Text="Auto prefers H.265, then H.264 or JPEG. Manual modes use JPEG if unavailable."
-                           Foreground="#A9B8C7" FontSize="11" Margin="0,4,0,0" TextWrapping="Wrap" />
-                <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
-                    <TextBlock Text="Phone input" VerticalAlignment="Center" Margin="0,0,10,0" />
-                    <ComboBox x:Name="TouchModePicker" Width="150" SelectionChanged="TouchMode_SelectionChanged"
-                              ToolTip="Direct taps the image. Cursor moves the pointer with your finger and taps at its position.">
-                        <ComboBoxItem Content="Direct touch" />
-                        <ComboBoxItem Content="Cursor (trackpad)" />
-                    </ComboBox>
-                </StackPanel>
-                <CheckBox x:Name="BackgroundInputCheck" Margin="0,10,0,0"
-                          Checked="BackgroundInput_Changed" Unchecked="BackgroundInput_Changed"
-                          VerticalContentAlignment="Top">
-                    <StackPanel>
-                        <TextBlock Text="Send input without activating window" Foreground="#F2F5F8" />
-                        <TextBlock Text="Experimental. Some apps ignore background input."
-                                   Foreground="#A9B8C7" FontSize="11" Margin="0,4,0,0" TextWrapping="Wrap" />
-                    </StackPanel>
-                </CheckBox>
-                <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
-                    <TextBlock Text="Port" VerticalAlignment="Center" Margin="0,0,12,0" />
+                    <Button x:Name="StopButton" Content="Stop sharing" IsEnabled="False" Click="Stop_Click" />
+                    <TextBlock Text="Port" Foreground="#F2F5F8" VerticalAlignment="Center" Margin="8,0,12,0" />
                     <TextBox x:Name="PortTextBox" Width="72" MaxLength="5" VerticalContentAlignment="Center"
                              ToolTip="TCP port (1–65535)" KeyDown="PortTextBox_KeyDown" />
                     <Button x:Name="ApplyPortButton" Content="Apply" Margin="8,0,0,0" Click="ApplyPort_Click" />
                 </StackPanel>
                 <CheckBox x:Name="RestoreLastWindowCheck" Margin="0,10,0,0"
                           Checked="RestoreLastWindow_Changed" Unchecked="RestoreLastWindow_Changed"
-                          VerticalContentAlignment="Top">
-                    <StackPanel>
-                        <TextBlock Text="Restore last window on startup" Foreground="#F2F5F8" />
-                        <TextBlock Text="If the last selected window is open, sharing starts automatically. Stop clears the saved window."
-                                   Foreground="#A9B8C7" FontSize="11" Margin="0,4,0,0" TextWrapping="Wrap" />
-                    </StackPanel>
-                </CheckBox>
-                <TextBlock x:Name="SelectedText" Text="No window selected" Foreground="#A9B8C7" Margin="0,12,0,0" TextWrapping="Wrap" />
+                          Foreground="#F2F5F8" Content="Restore last source on startup" />
+                <TextBlock x:Name="SelectedText" Text="No source selected" Foreground="#A9B8C7" Margin="0,10,0,0" TextWrapping="Wrap" />
                 <TextBlock x:Name="ClientStatusText" Text="No browser connected" Foreground="#A9B8C7" Margin="0,4,0,0" TextWrapping="Wrap" />
             </StackPanel>
         </Grid>

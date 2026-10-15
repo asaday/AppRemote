@@ -7,6 +7,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using AppRemote.Windows;
+using AppRemote.Android;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -29,7 +30,10 @@ internal sealed class RemoteServer : IAsyncDisposable
     private readonly object _videoGate = new();
     private ClientConnection? _activeClient;
     private WebApplication? _app;
-    private VideoPeer? _videoPeer;
+    private IRemoteVideoPeer? _videoPeer;
+    private AndroidSource? _androidSource;
+    private Func<VideoPreference, Task<AndroidSource>>? _androidFactory;
+    private readonly SemaphoreSlim _androidSwitch = new(1, 1);
     private volatile bool _videoActive;
     private VideoPreference? _activeCodec;
     private VideoPreference _videoPreference = VideoPreference.Auto;
@@ -40,7 +44,9 @@ internal sealed class RemoteServer : IAsyncDisposable
     public event Action<bool>? ClientChanged;
     public event Action<VideoPreference?>? VideoModeChanged;
     public event Action<string>? VideoFailed;
+    public event Action<AndroidSource>? AndroidSourceChanged;
     public string? Url { get; private set; }
+    public AndroidSource? CurrentAndroidSource => Volatile.Read(ref _androidSource);
     public IReadOnlyList<ConnectionOption> ConnectionOptions { get; private set; } = [];
 
     private sealed class ClientConnection(WebSocket socket)
@@ -70,6 +76,21 @@ internal sealed class RemoteServer : IAsyncDisposable
         }
         Interlocked.Exchange(ref _videoPeer, null)?.Dispose();
         SetVideoMode(null);
+    }
+
+    public AndroidSource? SetAndroidSource(AndroidSource? source, Func<VideoPreference, Task<AndroidSource>>? factory = null)
+    {
+        AndroidSource? previous;
+        lock (_clientGate)
+        {
+            previous = _androidSource;
+            _androidSource = source;
+            _androidFactory = factory;
+            _videoModeVersion++;
+        }
+        Interlocked.Exchange(ref _videoPeer, null)?.Dispose();
+        SetVideoMode(null);
+        return previous;
     }
 
     public void SetTouchMode(TouchInputMode mode)
@@ -140,6 +161,7 @@ internal sealed class RemoteServer : IAsyncDisposable
             var preference = GetVideoPreference();
             if (preference == VideoPreference.Jpeg)
                 return Results.StatusCode(StatusCodes.Status409Conflict);
+            var initialAndroidSource = Volatile.Read(ref _androidSource);
             var desired = preference switch
             {
                 VideoPreference.Auto => new[] { VideoPreference.H265, VideoPreference.H264 },
@@ -148,9 +170,10 @@ internal sealed class RemoteServer : IAsyncDisposable
             var candidates = desired.Where(codec => OfferHasCodec(offer, codec)).ToArray();
             if (candidates.Length == 0)
             {
+                var suffix = initialAndroidSource is null ? "; using JPEG." : ".";
                 var error = preference == VideoPreference.Auto
-                    ? "No supported WebRTC video codec; using JPEG."
-                    : $"{FormatCodec(preference)} is unavailable in this browser; using JPEG.";
+                    ? "No supported WebRTC video codec" + suffix
+                    : $"{FormatCodec(preference)} is unavailable in this browser" + suffix;
                 if (IsCurrentClient(clientId, version)) VideoFailed?.Invoke(error);
                 return Results.Problem(error, statusCode: StatusCodes.Status415UnsupportedMediaType);
             }
@@ -160,10 +183,14 @@ internal sealed class RemoteServer : IAsyncDisposable
             Exception? lastError = null;
             foreach (var codec in candidates)
             {
-                VideoPeer? peer = null;
+                IRemoteVideoPeer? peer = null;
                 try
                 {
-                    peer = new VideoPeer(_session, codec, requestedAddress);
+                    var androidSource = initialAndroidSource is null ? null
+                        : await EnsureAndroidCodecAsync(initialAndroidSource, codec);
+                    peer = androidSource is null
+                        ? new VideoPeer(_session, codec, requestedAddress)
+                        : new AndroidVideoPeer(androidSource, requestedAddress);
                     var currentPeer = peer;
                     peer.ActiveChanged += active =>
                     {
@@ -175,10 +202,11 @@ internal sealed class RemoteServer : IAsyncDisposable
                         if (ReferenceEquals(Volatile.Read(ref _videoPeer), currentPeer))
                             VideoFailed?.Invoke(message);
                     };
-                    VideoPeer? previous;
+                    IRemoteVideoPeer? previous;
                     lock (_clientGate)
                     {
-                        if (_activeClient?.Id != clientId || _videoModeVersion != version)
+                        if (_activeClient?.Id != clientId || _videoModeVersion != version ||
+                            !ReferenceEquals(_androidSource, androidSource))
                         {
                             peer.Dispose();
                             return Results.StatusCode(StatusCodes.Status409Conflict);
@@ -206,7 +234,8 @@ internal sealed class RemoteServer : IAsyncDisposable
                     }
                 }
             }
-            var failure = $"{FormatCodec(preference)} could not start; using JPEG. {lastError?.Message}";
+            var failure = $"{FormatCodec(preference)} could not start" +
+                (initialAndroidSource is null ? "; using JPEG. " : ". ") + lastError?.Message;
             if (IsCurrentClient(clientId, version)) VideoFailed?.Invoke(failure);
             return Results.Problem(failure, statusCode: 503);
         });
@@ -220,6 +249,33 @@ internal sealed class RemoteServer : IAsyncDisposable
         _app = app;
         ConnectionOptions = GetConnectionOptions();
         Url = ConnectionOptions[0].Url;
+    }
+
+    private async Task<AndroidSource> EnsureAndroidCodecAsync(AndroidSource initial, VideoPreference codec)
+    {
+        await _androidSwitch.WaitAsync();
+        try
+        {
+            var active = Volatile.Read(ref _androidSource);
+            if (active is null || active.Serial != initial.Serial)
+                throw new InvalidOperationException("Android source changed.");
+            if (active.Codec == codec) return active;
+            var factory = _androidFactory ?? throw new InvalidOperationException("Android encoder is unavailable.");
+            var replacement = await factory(codec);
+            lock (_clientGate)
+            {
+                if (!ReferenceEquals(_androidSource, active))
+                {
+                    _ = replacement.DisposeAsync();
+                    throw new InvalidOperationException("Android source changed.");
+                }
+                _androidSource = replacement;
+            }
+            AndroidSourceChanged?.Invoke(replacement);
+            await active.DisposeAsync();
+            return replacement;
+        }
+        finally { _androidSwitch.Release(); }
     }
 
     private async Task HandleSocketAsync(HttpContext context)
@@ -237,6 +293,7 @@ internal sealed class RemoteServer : IAsyncDisposable
             _activeClient = connection;
         }
         _input.Release();
+        if (Volatile.Read(ref _androidSource) is { } oldSource) await oldSource.ReleaseInputAsync();
         _input.ResetBackgroundCursor();
         Interlocked.Exchange(ref _videoPeer, null)?.Dispose();
         SetVideoMode(null);
@@ -246,7 +303,8 @@ internal sealed class RemoteServer : IAsyncDisposable
             var (preference, version, touchMode, backgroundInput) = GetClientSettings();
             var ready = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new
                 { type = "ready", clientId = connection.Id, mode = preference.ToString(), version,
-                    touchMode = touchMode.ToString(), backgroundInput }));
+                    touchMode = touchMode.ToString(), backgroundInput,
+                    source = Volatile.Read(ref _androidSource) is null ? "Windows" : "Android" }));
             await socket.SendAsync(ready, WebSocketMessageType.Text, true, context.RequestAborted);
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted);
             var sender = SendFramesAsync(connection, version, touchMode, backgroundInput, linked.Token);
@@ -260,8 +318,16 @@ internal sealed class RemoteServer : IAsyncDisposable
                     if (message.MessageType == WebSocketMessageType.Close) { closeRequested = true; break; }
                     if (message.MessageType != WebSocketMessageType.Text || !message.EndOfMessage) continue;
                     if (!IsCurrentClient(connection.Id)) continue;
-                    try { _input.Handle(Encoding.UTF8.GetString(buffer, 0, message.Count)); }
+                    try
+                    {
+                        var json = Encoding.UTF8.GetString(buffer, 0, message.Count);
+                        var android = Volatile.Read(ref _androidSource);
+                        if (android is not null) await android.HandleInputAsync(json);
+                        else _input.Handle(json);
+                    }
                     catch (JsonException) { /* Ignore malformed controls. */ }
+                    catch (Exception ex) when (ex is IOException or ObjectDisposedException or OperationCanceledException)
+                    { VideoFailed?.Invoke("Android input failed: " + ex.Message); }
                 }
             }
             catch (OperationCanceledException) { }
@@ -288,6 +354,7 @@ internal sealed class RemoteServer : IAsyncDisposable
             if (wasCurrent)
             {
                 _input.Release();
+                if (Volatile.Read(ref _androidSource) is { } source) await source.ReleaseInputAsync();
                 Interlocked.Exchange(ref _videoPeer, null)?.Dispose();
                 SetVideoMode(null);
                 ClientChanged?.Invoke(false);
@@ -345,7 +412,8 @@ internal sealed class RemoteServer : IAsyncDisposable
             if (version != announcedVersion)
             {
                 var update = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new
-                    { type = "videoMode", mode = preference.ToString(), version }));
+                    { type = "videoMode", mode = preference.ToString(), version,
+                        source = Volatile.Read(ref _androidSource) is null ? "Windows" : "Android" }));
                 await socket.SendAsync(update, WebSocketMessageType.Text, true, stop);
                 announcedVersion = version;
             }
@@ -364,7 +432,7 @@ internal sealed class RemoteServer : IAsyncDisposable
                 announcedBackgroundInput = backgroundInput;
             }
             var frame = _session.LatestFrame;
-            if (_session.Selected is null)
+            if (_session.Selected is null && Volatile.Read(ref _androidSource) is null)
             {
                 if (!waitingSent)
                 {

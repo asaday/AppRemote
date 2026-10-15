@@ -27,6 +27,7 @@
   let replaced = false;
   let currentClientId;
   let requestedMode = 'Auto';
+  let androidSource = false;
   let modeVersion = -1;
   let noticeTimer;
   let startupTimer;
@@ -92,7 +93,7 @@
 
   async function startVideo(clientId, version, h264Only = false) {
     if (!window.RTCPeerConnection) {
-      showNotice('WebRTC is unavailable; using JPEG');
+      showNotice(androidSource ? 'This browser cannot play Android video' : 'WebRTC is unavailable; using JPEG');
       return;
     }
     const current = new RTCPeerConnection({ iceServers: [] });
@@ -104,14 +105,14 @@
       if (!codecs.length || !transceiver.setCodecPreferences) {
         current.close();
         peer = null;
-        showNotice('H.264 is unavailable; using JPEG');
+        showNotice(androidSource ? 'H.264 is unavailable in this browser' : 'H.264 is unavailable; using JPEG');
         return;
       }
       try { transceiver.setCodecPreferences(codecs); }
       catch {
         current.close();
         peer = null;
-        showNotice('H.264 is unavailable; using JPEG');
+        showNotice(androidSource ? 'H.264 is unavailable in this browser' : 'H.264 is unavailable; using JPEG');
         return;
       }
     }
@@ -151,14 +152,15 @@
           showNotice('H.265 could not start; trying H.264');
           startVideo(clientId, version, true);
         } else {
-          showNotice('Video could not start; using JPEG');
+          showNotice(androidSource ? 'Android video could not start' : 'Video could not start; using JPEG');
         }
       }, 8000);
     } catch (error) {
       console.warn(error);
       if (peer === current && modeVersion === version) {
         peer = null;
-        showNotice(requestedMode === 'Auto' ? 'WebRTC is unavailable; using JPEG' :
+        showNotice(androidSource ? 'Android video is unavailable in this browser' :
+          requestedMode === 'Auto' ? 'WebRTC is unavailable; using JPEG' :
           requestedMode.replace('H264', 'H.264').replace('H265', 'H.265') + ' is unavailable; using JPEG');
       }
       current.close();
@@ -169,12 +171,15 @@
     if (status.version < modeVersion) return;
     clearTimeout(startupTimer);
     requestedMode = status.mode;
+    androidSource = status.source === 'Android';
     modeVersion = status.version;
     peer?.close();
     peer = null;
     video.srcObject = null;
     videoReady = false;
     video.style.display = 'none';
+    image.style.visibility = 'hidden';
+    show('Waiting for video...');
     if (requestedMode !== 'Jpeg' && currentClientId) startVideo(currentClientId, modeVersion);
   }
 
@@ -183,6 +188,7 @@
     clearTimeout(startupTimer);
     videoReady = true;
     video.style.display = 'block';
+    image.style.visibility = 'hidden';
     waitingForWindow = false;
     updateRemoteCursor();
     hide();
@@ -223,7 +229,7 @@
     socket = new WebSocket(`${scheme}//${location.host}/ws?key=${encodeURIComponent(key)}`);
     socket.binaryType = 'blob';
     socket.onopen = () => {
-      show('Choose a window on your PC');
+      show('Connecting to App Remote...');
     };
     socket.onmessage = event => {
       if (typeof event.data === 'string') {
@@ -246,8 +252,9 @@
             socket.close();
           } else if (status.type === 'waiting') {
             waitingForWindow = true;
+            image.style.visibility = 'hidden';
             updateRemoteCursor();
-            show('Choose a window on your PC');
+            show('Choose a source in App Remote');
           }
         } catch { }
         return;
@@ -255,8 +262,8 @@
       if (videoReady) return;
       const next = URL.createObjectURL(event.data);
       const previous = objectUrl;
-      image.onload = () => { waitingForWindow = false; updateRemoteCursor(); hide(); if (previous) URL.revokeObjectURL(previous); };
-      image.onerror = () => URL.revokeObjectURL(next);
+      image.onload = () => { waitingForWindow = false; image.style.visibility = 'visible'; updateRemoteCursor(); hide(); if (previous) URL.revokeObjectURL(previous); };
+      image.onerror = () => { image.style.visibility = 'hidden'; URL.revokeObjectURL(next); };
       objectUrl = next;
       image.src = next;
     };
@@ -269,6 +276,7 @@
       videoReady = false;
       waitingForWindow = false;
       video.style.display = 'none';
+      image.style.visibility = 'hidden';
       updateRemoteCursor();
       if (replaced || event.code === 4001) {
         show('Another device is connected');

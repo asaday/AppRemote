@@ -15,6 +15,8 @@
     <Compile Include="../../src/AppRemote/AppSettings.cs" Link="AppSettings.cs" />
     <Compile Include="../../src/AppRemote/RemoteServer.cs" Link="RemoteServer.cs" />
     <Compile Include="../../src/AppRemote/VideoPeer.cs" Link="VideoPeer.cs" />
+    <Compile Include="../../src/AppRemote/IRemoteVideoPeer.cs" Link="IRemoteVideoPeer.cs" />
+    <Compile Include="../../src/AppRemote/Android/*.cs" Link="Android/%(Filename)%(Extension)" />
     <Compile Include="../../src/AppRemote/Windows/NativeWindows.cs" Link="NativeWindows.cs" />
     <Compile Include="../../src/AppRemote/Windows/InputController.cs" Link="InputController.cs" />
     <Content Include="../../src/AppRemote/wwwroot/**/*" Link="wwwroot/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
